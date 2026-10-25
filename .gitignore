@@ -1,0 +1,21 @@
+# data and experiment artifacts (large / reproducible)
+dataset.zip
+data/raw/*
+data/processed/*
+runs/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!runs/.gitkeep
+*.pt
+*.npz
+*.joblib
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/

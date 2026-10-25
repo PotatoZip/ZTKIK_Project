@@ -1,0 +1,43 @@
+# Ablation: bottleneck size latent_dim = 8.
+# Every value is read into frozen dataclasses in src/fraud_ae/config.py and validated there.
+
+[data]
+zip_path = "dataset.zip"
+raw_csv = "data/raw/creditcard.csv"
+processed_dir = "data/processed"
+expected_sha256 = ""          # filled in after Phase 1 (first `fraud-ae prepare` prints it)
+drop_duplicates = true
+log_amount = true
+time_feature = "sincos"       # "sincos" (hour-of-day encoding) | "drop"
+legit_fractions = [0.6, 0.2, 0.2]   # train / val / test share of legitimate rows
+fraud_val_fraction = 0.5      # share of frauds placed in val; the rest go to test; train gets none
+seed = 42
+
+[model]
+hidden_dims = [20, 10]        # encoder widths; decoder is mirrored
+latent_dim = 8
+activation = "elu"            # "elu" | "relu" | "tanh"
+batch_norm = false            # kept for ablation only (ADR 6)
+dropout = 0.0
+
+[train]
+epochs = 100
+batch_size = 512
+lr = 1e-3
+weight_decay = 1e-5
+patience = 10                 # early stopping on val-legit MSE
+seed = 42
+num_threads = 8
+
+[score]
+method = "mse"                # "mse" | "standardized" | "mahalanobis"
+
+[threshold]
+strategy = "quantile"         # "quantile" | "youden" | "max_f1"
+target_fpr = 0.009            # margin below the 1 % criterion (ADR 2)
+
+[eval]
+fpr_grid = [0.001, 0.005, 0.01, 0.02]
+target_recall = 0.85
+target_fpr = 0.01
+bootstrap_samples = 1000
