@@ -53,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("train", help="Phase 2: train the autoencoder on legitimate rows")
     _add_config(p)
     _add_run(p)
+    p.add_argument(
+        "--synthetic",
+        action="store_true",
+        help=f"train on <processed_dir>{SYNTHETIC_SUFFIX} written by `prepare --synthetic`",
+    )
+    p.add_argument("--epochs", type=int, help="override train.epochs (smoke tests)")
 
     p = sub.add_parser("threshold", help="Phase 3: choose the MSE threshold on val-legit")
     _add_run(p)
@@ -104,12 +110,31 @@ def cmd_prepare(cfg: Config, synthetic: bool = False, figures_dir: str | None = 
     return 0
 
 
-def cmd_train(cfg: Config, run: Path) -> int:
-    from .data import load_splits
-    from .train import train
+def _processed_dir(cfg: Config, synthetic: bool) -> Path:
+    d = cfg.data.processed_dir
+    return project_root() / (d.rstrip("/") + SYNTHETIC_SUFFIX if synthetic else d)
 
-    splits = load_splits(project_root() / cfg.data.processed_dir)
+
+def cmd_train(cfg: Config, run: Path, synthetic: bool = False, epochs: int | None = None) -> int:
+    from .data import load_splits
+    from .train import load_summary, train
+
+    if epochs is not None:
+        cfg = dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, epochs=epochs))
+    splits = load_splits(_processed_dir(cfg, synthetic))
     train(cfg, splits.X_train, splits.X_val[splits.y_val == 0], run)
+    s = load_summary(run)
+    print(
+        f"trained on {s['n_train']:,} legit rows ({s['input_dim']} features, "
+        f"{s['n_parameters']:,} parameters), seed {s['seed']}"
+    )
+    print(
+        f"epochs: {s['epochs_run']}/{s['max_epochs']}"
+        f"{' (early stop)' if s['stopped_early'] else ''}  best epoch: {s['best_epoch']}  "
+        f"best val-legit MSE: {s['best_val_legit_mse']:.5f}  "
+        f"final train MSE: {s['final_train_mse']:.5f}  {s['wall_seconds']:.1f}s"
+    )
+    print(f"run directory: {run}")
     return 0
 
 
@@ -136,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "prepare":
             return cmd_prepare(load_config(args.config), args.synthetic, args.figures_dir)
         if args.command == "train":
-            return cmd_train(load_config(args.config), Path(args.run))
+            return cmd_train(load_config(args.config), Path(args.run), args.synthetic, args.epochs)
         if args.command == "threshold":
             return cmd_threshold(Path(args.run), args.strategy, args.target_fpr)
         if args.command == "evaluate":

@@ -24,7 +24,8 @@ uv run ruff check src tests
 ```bash
 uv run fraud-ae prepare   --config configs/base.toml                      # 1. preprocessing
 uv run fraud-ae prepare   --config configs/base.toml --synthetic          #    same pipeline on a 2 k-row generated set
-uv run fraud-ae train     --config configs/base.toml --run runs/ae_base   # 2. train AE on legit rows
+uv run fraud-ae train     --config configs/base.toml --run runs/ae_base   # 2. train AE on legit rows (~30 s CPU)
+uv run fraud-ae train     --config configs/base.toml --run runs/ae_synthetic --synthetic --epochs 5   # smoke run
 uv run fraud-ae threshold --run runs/ae_base                              # 3. MSE threshold (val-legit quantile)
 uv run fraud-ae evaluate  --run runs/ae_base                              # 4. recall / FPR on test, figures
 uv run fraud-ae baselines --config configs/base.toml                      # PCA + Isolation Forest
@@ -35,8 +36,9 @@ uv run fraud-ae all       --config configs/base.toml --run runs/ae_base   # phas
 and the EDA figures to `report/figures/eda_*.png`; `--synthetic` writes to
 `data/processed_synthetic/` instead so the real artifacts are never overwritten.
 
-Each run directory contains `config.toml` (snapshot), `model.pt`, `history.csv`,
-`threshold.json`, `metrics.json` (includes `meets_target`) and `figures/`.
+Each run directory contains `config.toml` (snapshot), `model.pt` (best checkpoint),
+`history.csv`, `train_summary.json`, `threshold.json`, `metrics.json` (includes `meets_target`)
+and `figures/`. `--synthetic` on `train` reads the splits written by `prepare --synthetic`.
 
 ## Layout
 
@@ -51,8 +53,9 @@ report/         report.md (English), prompt_log.md, figures/
 
 ## Status
 
-Phases 0 (scaffold) and 1 (data) done; phases 2–6 are tracked in `ROADMAP.md`. CLI sub-commands
-for unimplemented phases exit with code 2 and a "not implemented" message.
+Phases 0 (scaffold), 1 (data) and 2 (training) done; phases 3–6 are tracked in `ROADMAP.md`
+and every change in `report/CHANGELOG.md`. CLI sub-commands for unimplemented phases exit with
+code 2 and a "not implemented" message.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -72,3 +75,18 @@ for unimplemented phases exit with code 2 and a "not implemented" message.
 * Invariants under test (`tests/test_data.py`): no fraud in train, splits disjoint and covering,
   seeded split reproducible, scaler statistics equal train statistics, no duplicate rows across
   splits, sha256 mismatch rejected, artifact round-trip.
+
+### Phase 2 – training (`fraud-ae train --run runs/ae_base`, seed 42)
+
+| | |
+|---|---|
+| Model | 31 → 20 → 10 → 5 → 10 → 20 → 31, ELU, linear output, 1 836 parameters |
+| Optimiser | Adam lr 1e-3, weight decay 1e-5, batch 512, `ReduceLROnPlateau` |
+| Selection | lowest MSE on the 56 651 legitimate validation rows (no fraud label used) |
+| Result | val-legit MSE 0.770 (epoch 1) → **0.420** (best, epoch 99); train MSE 0.418; 100/100 epochs, 31 s on CPU |
+
+The 100-epoch cap binds before early stopping (patience 10) does: the curve is flat but still
+creeping down, so a longer schedule is a candidate for the Phase 4 ablations. Figure:
+`report/figures/training_curves_ae_base.png`. Determinism: two runs with the same seed give
+identical losses in `history.csv` (only the wall-clock `seconds` column differs) and a
+byte-identical `model.pt` (unit-tested on the synthetic split and checked on the real data).

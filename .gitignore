@@ -21,4 +21,10 @@ __pycache__/
 .ruff_cache/
 .ipynb_checkpoints/
 
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
 *_log.md
