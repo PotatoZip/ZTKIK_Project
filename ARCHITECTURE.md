@@ -54,7 +54,7 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `data.py` | Phase 1 pipeline and artifact I/O | `prepare(cfg, root, figures_dir) -> (Splits, report)`, `load_splits(dir)`, `split_table_markdown(report)` |
 | `synthetic.py` | 2 k-row creditcard-like frame for tests and `prepare --synthetic` (ADR 9) | `make_synthetic_frame(n_legit, n_fraud, n_duplicates, seed)` |
 | `model.py` | symmetric MLP autoencoder | `Autoencoder`, `build_model(input_dim, cfg)` |
-| `train.py` | seeding, early stopping on val-legit MSE, checkpoint | `train(cfg, X_train, X_val_legit, run_dir)` |
+| `train.py` | seeding, manual seeded mini-batching, early stopping on val-legit MSE, best checkpoint, `ReduceLROnPlateau` | `train(cfg, X_train, X_val_legit, run_dir) -> Autoencoder`, `load_model(run_dir)`, `mse_per_sample(model, X)` |
 | `scoring.py` | residual-based anomaly scores | `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis` |
 | `threshold.py` | threshold strategies | `choose_threshold(scores_val, y_val, cfg) -> ThresholdResult` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg) -> dict` |
@@ -63,9 +63,22 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `cli.py` | `fraud-ae prepare [--synthetic]|train|threshold|evaluate|baselines|all` | `main(argv)`; paths resolve against the cwd |
 
 ### Model
-`input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, ~2 k parameters.
+`input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
 Adam (lr 1e-3, wd 1e-5), MSE loss, batch 512, ≤ 100 epochs, early stopping patience 10,
-`ReduceLROnPlateau`. One epoch ≈ 1–2 s on CPU, so sweeps are cheap.
+`ReduceLROnPlateau(factor 0.5, patience 5)`. One epoch on the 170 k training rows takes well under
+a second on CPU, so sweeps are cheap.
+
+### Training loop (Phase 2)
+* Only `X_train` (legit) is fitted; model selection uses the MSE on the **legitimate** part of
+  the validation split (`X_val[y_val == 0]`). No fraud label is read during training.
+* Determinism: `seed_everything` seeds `random`/`numpy`/`torch` and turns on
+  `torch.use_deterministic_algorithms(True)`; batches come from `torch.randperm` driven by a
+  dedicated seeded `Generator` instead of a `DataLoader`, so two runs with the same seed produce
+  identical losses and bit-identical weights (tested; only the wall-clock column of
+  `history.csv` differs).
+* The best state dict (lowest val-legit MSE) is kept in memory and written once at the end,
+  together with `history.csv` and `train_summary.json` (epochs run, best epoch, parameter
+  count, wall time). The training-curve figure is drawn from `history.csv`.
 
 ### Scoring
 * `mse` – per-sample mean squared residual (abstract's method, primary).
@@ -84,8 +97,8 @@ for recall@1 % FPR, `meets_target`.
 
 ### Run-directory contract
 ```
-runs/<name>/ config.toml  model.pt  history.csv  scores_val.npz  scores_test.npz
-             threshold.json  metrics.json  figures/*.png
+runs/<name>/ config.toml  model.pt  history.csv  train_summary.json
+             scores_val.npz  scores_test.npz  threshold.json  metrics.json  figures/*.png
 ```
 Baselines write the same files (minus `model.pt`/`history.csv`) so one comparison routine works
 for everything.
@@ -104,6 +117,8 @@ for everything.
 | 8 | TOML configs via stdlib `tomllib`, frozen dataclasses | zero extra dependency on Python 3.11; immutable run config |
 | 9 | Tests and `prepare --synthetic` share one generated 2 k-row frame (`synthetic.py`) | suite needs no 150 MB download and runs in seconds; the CLI path can be exercised end-to-end on any machine; synthetic outputs go to `data/processed_synthetic/` so real artifacts are never overwritten |
 | 10 | Dataset sha256 pinned in every config, checked by `prepare` | a different CSV (re-download, partial extract) fails loudly instead of silently changing the numbers |
+| 11 | Manual seeded mini-batching (`torch.randperm` + `Generator`) instead of `DataLoader` | tensors fit in memory; no worker processes, no shuffling non-determinism, one fewer moving part for the "same seed → same losses" exit criterion |
+| 12 | `--synthetic` flag on `prepare` and `train` | every phase can be smoke-tested end-to-end in seconds on the 2 k-row generated set before touching the real data |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.

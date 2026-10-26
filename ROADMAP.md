@@ -10,7 +10,7 @@ compared against PCA-reconstruction and Isolation Forest baselines.
 |---|---|---|---|---|---|
 | 0 | **Scaffold** ✅ | layout, `pyproject`/uv, configs, package skeleton, tests, docs | this repo | `uv sync`, `fraud-ae --help`, `pytest`, `ruff` all green | 1 session |
 | 1 | **Data** (abstract phase 1) ✅ | unzip + sha256, dedupe, `log1p(Amount)`, hour-of-day sin/cos, seeded split (train = legit only), scaler fit on train, EDA | `data.py`, `synthetic.py`, `prepare [--synthetic]`, `data_report.json`, EDA figures (class ratio, Amount distribution, fraud rate by hour) | split invariants tested (`tests/test_data.py`, 19 tests pass); split-size table in README; sha256 pinned in configs | 1 session |
-| 2 | **Train** (abstract phase 2) | training loop, early stopping on val-legit MSE, checkpoints, seeding | `train.py`, `runs/ae_base/{model.pt,history.csv}`, training-curve figure | val MSE converges; two runs with the same seed give identical losses | 1 session |
+| 2 | **Train** (abstract phase 2) ✅ | training loop, early stopping on val-legit MSE, checkpoints, seeding | `train.py`, `train [--synthetic] [--epochs]`, `runs/ae_base/{config.toml,model.pt,history.csv,train_summary.json}`, `report/figures/training_curves_ae_base.png` | val MSE converges (0.770 → 0.420); same seed → identical losses and byte-identical `model.pt` (tested) | 1 session |
 | 3 | **Threshold** (abstract phase 3) | scoring (`mse`, `standardized`, `mahalanobis`), threshold strategies | `scoring.py`, `threshold.py`, `threshold.json`, score histogram | val FPR ≈ 0.9 % with the quantile strategy; quantile property test passes | 0.5 session |
 | 4 | **Evaluate** (abstract phase 4) | ROC/PR-AUC, recall@FPR grid, confusion matrix, Wilson + bootstrap CIs, figures, criterion check | `evaluate.py`, `plots.py`, `metrics.json`, ROC/PR/recall-vs-FPR/threshold-sweep/per-feature figures | **Decision gate:** `meets_target` true → Phase 5; false → run scoring variants, latent sweep (`configs/ablation_latent_*`), `ablation_no_time`, 5 seeds, then re-evaluate | 1 session |
 | 5 | **Baselines & ablations** | PCA(k ∈ {5,10,15}), Isolation Forest; ablations: scoring method, latent size, Time feature, BatchNorm, 5 seeds, temporal split | `baselines.py`, `results/comparison.md`, box/bar plots | comparison table complete with CIs; seed variance reported | 1–1.5 sessions |
@@ -30,6 +30,17 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
   lowest; fraud amounts are smaller in median (9.82 vs 22.00) but heavier-tailed.
 * `fraud-ae prepare --synthetic` runs the identical pipeline on a 2 050-row generated frame
   (`fraud_ae.synthetic`) into `data/processed_synthetic/`; the test suite uses the same frame.
+
+### Phase 2 outcome (2026-10-26, milestone M1)
+
+* `runs/ae_base`: 1 836-parameter AE trained on 169 952 legit rows; val-legit MSE
+  0.770 → 0.420 (best epoch 99 of 100), train MSE 0.418, 31 s on CPU. The epoch cap binds before
+  early stopping – the curve is flat but still creeping; `train.epochs = 200` is a cheap Phase 4
+  ablation.
+* Synthetic smoke run (`--synthetic`, 1 200 rows): 100 epochs in 0.2 s; frauds reconstruct with
+  more than 2× the median MSE of legit rows (tested), i.e. the premise holds on the toy set.
+* Determinism: unit test on the synthetic split plus two 3-epoch runs on the real data give
+  identical train/val losses and byte-identical checkpoints (only the timing column differs).
 
 ## Risks
 

@@ -162,7 +162,33 @@ def eda_figures(df: pd.DataFrame, out_dir: Path) -> dict[str, Path]:
 
 
 def training_curves(history_csv: Path, out: Path) -> Path:
-    raise NotImplementedError("Phase 2")
+    """Train vs val-legit MSE per epoch (log y), best epoch marked; LR steps in a lower panel."""
+    h = pd.read_csv(history_csv)
+    best = int(h["val_legit_mse"].idxmin())
+    fig, (ax, ax_lr) = plt.subplots(
+        2, 1, figsize=(6.5, 4.2), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
+    )
+    ax.plot(h["epoch"], h["train_mse"], color=COLOR_LEGIT, linewidth=2, label="train MSE")
+    ax.plot(h["epoch"], h["val_legit_mse"], color=COLOR_FRAUD, linewidth=2, label="val-legit MSE")
+    ax.scatter(
+        [h.loc[best, "epoch"]], [h.loc[best, "val_legit_mse"]], s=40, zorder=3, color=COLOR_FRAUD
+    )
+    ax.annotate(
+        f"best epoch {int(h.loc[best, 'epoch'])}: {h.loc[best, 'val_legit_mse']:.4f}",
+        (h.loc[best, "epoch"], h.loc[best, "val_legit_mse"]),
+        xytext=(6, 8),
+        textcoords="offset points",
+        color=COLOR_TEXT,
+    )
+    ax.set_yscale("log")
+    ax.set_ylabel("MSE (standardized units)")
+    ax.set_title(f"Training curves – {len(h)} epochs, early stopping on val-legit MSE")
+    ax.legend(loc="upper right")
+    ax_lr.step(h["epoch"], h["lr"], where="post", color=COLOR_TEXT, linewidth=1.5)
+    ax_lr.set_yscale("log")
+    ax_lr.set_ylabel("lr")
+    ax_lr.set_xlabel("epoch")
+    return _save(fig, out)
 
 
 def score_histogram(scores: np.ndarray, y: np.ndarray, threshold: float, out: Path) -> Path:
