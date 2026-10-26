@@ -7,13 +7,21 @@ tests exercise the functions directly and the CLI stays trivial.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
 from . import __version__
-from .config import Config, load_config
+from .config import Config, ConfigError, load_config
+from .data import DataError
 
-PROJECT_ROOT = Path.cwd()
+SYNTHETIC_CSV = "data/raw/synthetic.csv"
+SYNTHETIC_SUFFIX = "_synthetic"
+
+
+def project_root() -> Path:
+    """Paths in configs are relative to the current working directory."""
+    return Path.cwd()
 
 
 def _add_config(p: argparse.ArgumentParser) -> None:
@@ -34,6 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("prepare", help="Phase 1: preprocess the dataset into data/processed")
     _add_config(p)
+    p.add_argument(
+        "--synthetic",
+        action="store_true",
+        help=f"use a tiny generated dataset ({SYNTHETIC_CSV}, outputs under "
+        f"<processed_dir>{SYNTHETIC_SUFFIX}) to check the pipeline without the real CSV",
+    )
+    p.add_argument("--figures-dir", help="where EDA figures go (default: report/figures)")
 
     p = sub.add_parser("train", help="Phase 2: train the autoencoder on legitimate rows")
     _add_config(p)
@@ -56,10 +71,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_prepare(cfg: Config) -> int:
-    from .data import prepare
+def cmd_prepare(cfg: Config, synthetic: bool = False, figures_dir: str | None = None) -> int:
+    from .data import prepare, split_table_markdown
 
-    prepare(cfg.data, PROJECT_ROOT)
+    root = project_root()
+    dcfg = cfg.data
+    if synthetic:
+        from .synthetic import write_synthetic_csv
+
+        write_synthetic_csv(root / SYNTHETIC_CSV)
+        dcfg = dataclasses.replace(
+            dcfg,
+            zip_path="",
+            raw_csv=SYNTHETIC_CSV,
+            processed_dir=dcfg.processed_dir.rstrip("/") + SYNTHETIC_SUFFIX,
+            expected_sha256="",
+        )
+        figs = Path(figures_dir) if figures_dir else root / dcfg.processed_dir / "figures"
+    else:
+        figs = Path(figures_dir) if figures_dir else root / "report" / "figures"
+
+    _, report = prepare(dcfg, root, figures_dir=figs)
+    rows, cb = report["rows"], report["class_balance"]
+    print(
+        f"raw rows: {rows['raw']:,}  duplicates dropped: {rows['duplicates_dropped']:,}  "
+        f"rows: {rows['after_dedupe']:,}  frauds: {cb['fraud']:,} ({cb['fraud_rate']:.3%})"
+    )
+    print(f"sha256({dcfg.raw_csv}) = {report['source']['sha256']}")
+    print(f"features ({len(report['features'])}): {', '.join(report['features'])}")
+    print(split_table_markdown(report))
+    print(f"artifacts: {root / dcfg.processed_dir}   figures: {figs}")
     return 0
 
 
@@ -67,7 +108,7 @@ def cmd_train(cfg: Config, run: Path) -> int:
     from .data import load_splits
     from .train import train
 
-    splits = load_splits(PROJECT_ROOT / cfg.data.processed_dir)
+    splits = load_splits(project_root() / cfg.data.processed_dir)
     train(cfg, splits.X_train, splits.X_val[splits.y_val == 0], run)
     return 0
 
@@ -84,7 +125,8 @@ def cmd_baselines(cfg: Config) -> int:
     from .baselines import run_baselines
     from .data import load_splits
 
-    run_baselines(cfg, load_splits(PROJECT_ROOT / cfg.data.processed_dir), PROJECT_ROOT / "runs")
+    root = project_root()
+    run_baselines(cfg, load_splits(root / cfg.data.processed_dir), root / "runs")
     return 0
 
 
@@ -92,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "prepare":
-            return cmd_prepare(load_config(args.config))
+            return cmd_prepare(load_config(args.config), args.synthetic, args.figures_dir)
         if args.command == "train":
             return cmd_train(load_config(args.config), Path(args.run))
         if args.command == "threshold":
@@ -117,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     except NotImplementedError as exc:
         print(f"fraud-ae {args.command}: not implemented yet ({exc})", file=sys.stderr)
         return 2
+    except (ConfigError, DataError) as exc:
+        print(f"fraud-ae {args.command}: {exc}", file=sys.stderr)
+        return 1
     return 1
 
 

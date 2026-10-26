@@ -2,6 +2,7 @@
 dataset.zip
 data/raw/*
 data/processed/*
+data/processed_synthetic/
 runs/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
@@ -19,3 +20,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+
+*_log.md
