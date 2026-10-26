@@ -5,7 +5,7 @@
 zip_path = "dataset.zip"
 raw_csv = "data/raw/creditcard.csv"
 processed_dir = "data/processed"
-expected_sha256 = ""          # filled in after Phase 1 (first `fraud-ae prepare` prints it)
+expected_sha256 = "76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89"  # creditcard.csv (Phase 1)
 drop_duplicates = true
 log_amount = true
 time_feature = "drop"         # ablation: no clock feature at all

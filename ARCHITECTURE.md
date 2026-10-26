@@ -13,15 +13,16 @@ criterion (recall ≥ 85 % at FPR < 1 %). Three facts shape everything below:
    1 % FPR). The design therefore keeps scoring and architecture configurable so the gap can be
    closed by disclosed, reproducible ablations rather than by hand-tuning.
 
-Quantified criterion: with ~56.9 k legitimate test rows, FPR < 1 % allows ≤ ~569 false alarms;
-with 246 test frauds, recall ≥ 85 % means ≥ 209 detected. Precision at that operating point is
-~27–42 %, which is normal for an alerting system and should be stated in the report.
+Quantified criterion (after Phase 1, seed 42): with 56 650 legitimate test rows, FPR < 1 %
+allows ≤ 566 false alarms; with 237 test frauds, recall ≥ 85 % means ≥ 202 detected. Precision
+at this operating point is ~26–40 %, which is normal for an alerting system and should be stated
+in the report.
 
 ## 2. Data flow
 
 ```
 dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
-  → drop exact duplicates (the dataset has ~1 k; dedupe BEFORE splitting)
+  → drop exact duplicates (1 081 rows, 19 of them frauds; dedupe BEFORE splitting)
   → features:  Amount → log1p(Amount)
                Time   → hour-of-day → sin, cos      (config data.time_feature = "sincos" | "drop")
                V1..V28 unchanged
@@ -29,6 +30,7 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
                    fraud  0 / 50 / 50 %             (config data.fraud_val_fraction)
   → StandardScaler fit on TRAIN only
   → data/processed/{splits.npz, scaler.joblib, feature_names.json, data_report.json}
+    + report/figures/eda_{class_ratio,amount_distribution,fraud_rate_by_hour}.png
   → train.py  → runs/<name>/{config.toml, model.pt, history.csv}
   → scoring.py + threshold.py → scores_{val,test}.npz, threshold.json
   → evaluate.py + plots.py    → metrics.json (meets_target), figures/*.png
@@ -36,22 +38,29 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
-covering; scaler statistics equal train statistics.
+covering; split reproducible from the seed; scaler statistics equal train statistics; no identical
+feature rows across splits; sha256 mismatch and schema errors rejected; `splits.npz` round-trips.
+
+`data_report.json` holds everything the report needs from this phase: sha256, row counts,
+duplicates, class balance, per-split sizes, amount summary per class, per-hour traffic and fraud
+rate, scaler mean/scale, figure paths and the `[data]` config snapshot. `idx_*` are positions in
+the de-duplicated frame, so any split row can be traced back to the CSV.
 
 ## 3. Components (`src/fraud_ae/`)
 
 | Module | Responsibility | Key API |
 |---|---|---|
 | `config.py` | frozen dataclasses from TOML (stdlib `tomllib`), cross-field validation | `load_config(path) -> Config` |
-| `data.py` | Phase 1 pipeline and artifact I/O | `prepare(cfg, root) -> Splits`, `load_splits(dir)` |
+| `data.py` | Phase 1 pipeline and artifact I/O | `prepare(cfg, root, figures_dir) -> (Splits, report)`, `load_splits(dir)`, `split_table_markdown(report)` |
+| `synthetic.py` | 2 k-row creditcard-like frame for tests and `prepare --synthetic` (ADR 9) | `make_synthetic_frame(n_legit, n_fraud, n_duplicates, seed)` |
 | `model.py` | symmetric MLP autoencoder | `Autoencoder`, `build_model(input_dim, cfg)` |
 | `train.py` | seeding, early stopping on val-legit MSE, checkpoint | `train(cfg, X_train, X_val_legit, run_dir)` |
 | `scoring.py` | residual-based anomaly scores | `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis` |
 | `threshold.py` | threshold strategies | `choose_threshold(scores_val, y_val, cfg) -> ThresholdResult` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg) -> dict` |
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits | `run_baselines(cfg, splits, runs_root)` |
-| `plots.py` | all figures, headless matplotlib | one function per figure |
-| `cli.py` | `fraud-ae prepare|train|threshold|evaluate|baselines|all` | `main(argv)` |
+| `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
+| `cli.py` | `fraud-ae prepare [--synthetic]|train|threshold|evaluate|baselines|all` | `main(argv)`; paths resolve against the cwd |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, ~2 k parameters.
@@ -93,7 +102,8 @@ for everything.
 | 6 | No BatchNorm by default | inference-time batch statistics distort per-sample anomaly scores |
 | 7 | CPU-only torch via pinned uv index | no GPU on the machine; model is tiny |
 | 8 | TOML configs via stdlib `tomllib`, frozen dataclasses | zero extra dependency on Python 3.11; immutable run config |
-| 9 | Tests run on a synthetic 2 k-row frame | suite needs no 150 MB download and runs in seconds |
+| 9 | Tests and `prepare --synthetic` share one generated 2 k-row frame (`synthetic.py`) | suite needs no 150 MB download and runs in seconds; the CLI path can be exercised end-to-end on any machine; synthetic outputs go to `data/processed_synthetic/` so real artifacts are never overwritten |
+| 10 | Dataset sha256 pinned in every config, checked by `prepare` | a different CSV (re-download, partial extract) fails loudly instead of silently changing the numbers |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.
