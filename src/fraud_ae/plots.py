@@ -394,5 +394,96 @@ def per_feature_residuals(
     return _save(fig, out)
 
 
-def baseline_comparison(metrics_by_run: dict[str, dict], out: Path) -> Path:
-    raise NotImplementedError("Phase 5")
+def baseline_comparison(rows: list[dict], out: Path, target_recall: float = 0.85) -> Path:
+    """Horizontal bars: test recall at the val-chosen threshold with Wilson 95 % whiskers, one
+    row per run (``rows`` from ``baselines.comparison_rows``); the oracle recall at the target
+    FPR is a hollow marker; the criterion is the dashed line."""
+    rows = sorted(rows, key=lambda r: r["recall"])
+    n = len(rows)
+    y = np.arange(n)
+    rec = np.array([r["recall"] for r in rows])
+    lo = np.array([r["recall_ci"][0] for r in rows])
+    hi = np.array([r["recall_ci"][1] for r in rows])
+    oracle = np.array([r["recall_at_target"] for r in rows])
+    colors = [
+        COLOR_TEXT if r["model"].startswith(("PCA", "Isolation")) else COLOR_LEGIT for r in rows
+    ]
+
+    fig, ax = plt.subplots(figsize=(7.5, 0.32 * n + 1.6))
+    ax.barh(y, rec, color=colors, height=0.62, alpha=0.9)
+    ax.errorbar(rec, y, xerr=[rec - lo, hi - rec], fmt="none", ecolor=COLOR_TEXT, capsize=3, lw=1)
+    ax.scatter(
+        oracle,
+        y,
+        marker="o",
+        facecolors="white",
+        edgecolors=COLOR_FRAUD,
+        s=28,
+        zorder=4,
+        label="recall @ 1 % FPR (oracle threshold)",
+    )
+    ax.axvline(
+        target_recall,
+        color=COLOR_FRAUD,
+        linestyle="--",
+        lw=1.2,
+        label=f"target {target_recall:.0%}",
+    )
+    for yi, r in zip(y, rows, strict=True):
+        ax.annotate(
+            f"{r['recall']:.1%}  (FPR {r['fpr']:.2%})",
+            (r["recall_ci"][1], yi),
+            xytext=(4, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=8,
+            color=COLOR_TEXT,
+        )
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{r['run']}  ·  {r['model']}" for r in rows], fontsize=8)
+    ax.set_xlim(0, 1.0)
+    ax.grid(axis="x")
+    ax.grid(False, axis="y")
+    ax.set_xlabel("test recall at the val-chosen threshold (Wilson 95 %)")
+    ax.set_title("Autoencoder (blue) vs baselines (grey) on the test split")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.09), ncol=2, fontsize=8)
+    return _save(fig, out)
+
+
+def seed_variance(families: dict[str, dict[str, list[float]]], out: Path) -> Path:
+    """Box + points of val and test recall across seeds, one group per run family."""
+    names = list(families)
+    fig, ax = plt.subplots(figsize=(1.6 * len(names) + 3.5, 3.6))
+    pos = np.arange(len(names))
+    for off, key, color, label in (
+        (-0.18, "val", COLOR_LEGIT, "val recall"),
+        (0.18, "test", COLOR_FRAUD, "test recall"),
+    ):
+        data = [families[n][key] for n in names]
+        ax.boxplot(
+            data,
+            positions=pos + off,
+            widths=0.3,
+            patch_artist=True,
+            boxprops={"facecolor": color, "alpha": 0.25, "edgecolor": color},
+            medianprops={"color": color, "lw": 2},
+            whiskerprops={"color": color},
+            capprops={"color": color},
+            showfliers=False,
+        )
+        for p_, d in zip(pos + off, data, strict=True):
+            ax.scatter(
+                np.full(len(d), p_),
+                d,
+                color=color,
+                s=18,
+                zorder=3,
+                label=label if p_ == pos[0] + off else None,
+            )
+    ax.axhline(0.85, color=COLOR_TEXT, linestyle="--", lw=1)
+    ax.set_xticks(pos)
+    ax.set_xticklabels([f"{n} ({len(families[n]['test'])} seeds)" for n in names], fontsize=8)
+    ax.set_ylabel("recall at the val-chosen threshold")
+    ax.set_title("Seed variance – validation vs test recall")
+    ax.legend(loc="lower right", fontsize=8)
+    return _save(fig, out)

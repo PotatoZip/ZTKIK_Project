@@ -82,7 +82,7 @@ def mse_per_sample(model: nn.Module, X: torch.Tensor, batch_size: int = 8192) ->
     return torch.cat(out) if out else torch.empty(0)
 
 
-def _snapshot_config(cfg: Config, run_dir: Path) -> None:
+def snapshot_config(cfg: Config, run_dir: Path) -> None:
     """Write ``config.toml``: a verbatim copy of the source file, or – when CLI overrides such as
     ``--epochs`` / ``--seed`` changed it – the *effective* config written by hand (stdlib has
     no TOML writer) with a header naming the source file."""
@@ -112,7 +112,7 @@ def train(cfg: Config, X_train: np.ndarray, X_val_legit: np.ndarray, run_dir: Pa
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     seed_everything(tc.seed, tc.num_threads)
-    _snapshot_config(cfg, run_dir)
+    snapshot_config(cfg, run_dir)
 
     Xtr = torch.as_tensor(np.asarray(X_train), dtype=torch.float32)
     Xva = torch.as_tensor(np.asarray(X_val_legit), dtype=torch.float32)

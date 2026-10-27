@@ -15,6 +15,7 @@ TimeFeature = Literal["sincos", "drop"]
 Activation = Literal["elu", "relu", "tanh"]
 ScoreMethod = Literal["mse", "standardized", "mahalanobis"]
 ThresholdStrategy = Literal["quantile", "youden", "max_f1"]
+SplitStrategy = Literal["random", "temporal"]
 
 
 class ConfigError(ValueError):
@@ -33,6 +34,7 @@ class DataConfig:
     legit_fractions: tuple[float, float, float] = (0.6, 0.2, 0.2)
     fraud_val_fraction: float = 0.5
     seed: int = 42
+    split: SplitStrategy = "random"  # "temporal": train on the earliest transactions
 
     @property
     def n_features(self) -> int:
@@ -126,6 +128,8 @@ def validate(cfg: Config) -> None:
         raise ConfigError("data.fraud_val_fraction must be in [0, 1]")
     if d.time_feature not in ("sincos", "drop"):
         raise ConfigError(f"data.time_feature invalid: {d.time_feature!r}")
+    if d.split not in ("random", "temporal"):
+        raise ConfigError(f"data.split invalid: {d.split!r}")
     if not m.hidden_dims or any(h <= 0 for h in m.hidden_dims):
         raise ConfigError("model.hidden_dims must be a non-empty list of positive ints")
     if not 0 < m.latent_dim < m.hidden_dims[-1]:

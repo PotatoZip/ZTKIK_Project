@@ -132,7 +132,12 @@ def test_prepare_writes_artifacts_and_invariants(synthetic_project, synthetic_df
         assert (out / "figures" / fig.split("/")[-1]).exists()
 
     # counts
-    assert report["rows"] == {"raw": 2050, "duplicates_dropped": 10, "after_dedupe": 2040}
+    assert report["rows"] == {
+        "raw": 2050,
+        "duplicates_dropped": 10,
+        "after_dedupe": 2040,
+        "frauds_dropped_train_window": 0,
+    }
     s = report["splits"]
     assert s["train"]["fraud"] == 0 and s["train"]["legit"] == 1200
     assert s["val"]["fraud"] == 20 and s["test"]["fraud"] == 20
@@ -213,3 +218,44 @@ def test_split_table_markdown(synthetic_project):
     md = data.split_table_markdown(report)
     assert md.splitlines()[0].startswith("| Split |")
     assert "| train | 1,200 | 0 |" in md
+
+
+# --------------------------------------------------------------------------- temporal split
+
+
+def test_temporal_split_is_chronological_and_legit_only_in_train(synthetic_df):
+    df, _ = data.drop_duplicates(synthetic_df)
+    y = df["Class"].to_numpy()
+    t = df["Time"].to_numpy()
+    cfg = DataConfig(split="temporal")
+    tr, va, te = data.split_indices(y, cfg, time=t)
+    assert y[tr].sum() == 0
+    assert t[tr].max() <= t[va].min() and t[va].max() <= t[te].min()
+    assert len(set(tr) | set(va) | set(te)) == len(tr) + len(va) + len(te)
+    n_legit = int((y == 0).sum())
+    assert len(tr) == round(0.6 * n_legit)
+    assert y[va].sum() + y[te].sum() <= y.sum()  # train-window frauds are dropped
+    assert y[va].sum() + y[te].sum() > 0
+    with pytest.raises(ValueError):
+        data.split_indices(y, cfg)  # needs Time
+
+
+def test_temporal_split_ignores_seed(synthetic_df):
+    df, _ = data.drop_duplicates(synthetic_df)
+    y, t = df["Class"].to_numpy(), df["Time"].to_numpy()
+    a = data.split_indices(y, DataConfig(split="temporal", seed=1), time=t)
+    b = data.split_indices(y, DataConfig(split="temporal", seed=2), time=t)
+    assert all(np.array_equal(x, z) for x, z in zip(a, b, strict=True))
+
+
+def test_prepare_temporal_reports_dropped_frauds(synthetic_project):
+    root = synthetic_project
+    cfg = DataConfig(zip_path="", split="temporal", processed_dir="data/processed_temporal")
+    splits, report = data.prepare(cfg, root)
+    assert report["split_strategy"] == "temporal"
+    rows = report["rows"]
+    used = sum(report["splits"][s]["fraud"] for s in ("train", "val", "test"))
+    assert rows["frauds_dropped_train_window"] == report["class_balance"]["fraud"] - used
+    w = report["time_windows"]
+    assert w["train"][1] <= w["val"][0] and w["val"][1] <= w["test"][0]
+    assert splits.y_val.sum() == report["splits"]["val"]["fraud"]

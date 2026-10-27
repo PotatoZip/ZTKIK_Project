@@ -17,12 +17,12 @@ def test_help_lists_all_phases(capsys):
 def test_unimplemented_phase_exits_with_code_2(capsys, monkeypatch, project_root):
     import fraud_ae.cli as cli
 
-    def stub(cfg):
-        raise NotImplementedError("Phase 5")
+    def stub(*args):  # every phase is implemented; keep the exit-code path covered
+        raise NotImplementedError("Phase 7")
 
-    monkeypatch.setattr(cli, "cmd_baselines", stub)
+    monkeypatch.setattr(cli, "cmd_compare", stub)
     monkeypatch.chdir(project_root)
-    assert main(["baselines", "--config", "configs/base.toml"]) == 2
+    assert main(["compare"]) == 2
     assert "not implemented" in capsys.readouterr().err
 
 
@@ -226,3 +226,35 @@ def test_train_rejects_splits_with_wrong_feature_count(tmp_path, monkeypatch, pr
     rc = main(["train", "--config", "configs/no_time.toml", "--run", "runs/t", "--synthetic"])
     assert rc == 1
     assert "29" in capsys.readouterr().err
+
+
+def test_baselines_and_compare_synthetic_end_to_end(tmp_path, monkeypatch, project_root, capsys):
+    (tmp_path / "configs").mkdir()
+    shutil.copy(project_root / "configs" / "base.toml", tmp_path / "configs" / "base.toml")
+    monkeypatch.chdir(tmp_path)
+    assert main(["prepare", "--config", "configs/base.toml", "--synthetic"]) == 0
+    assert main(["baselines", "--config", "configs/base.toml", "--synthetic"]) == 0
+    out = capsys.readouterr().out
+    assert "baseline_pca_k5_synthetic: PCA k=5" in out and "baseline_iforest_synthetic" in out
+    runs = tmp_path / "runs"
+    for name in ("baseline_pca_k5", "baseline_pca_k10", "baseline_pca_k15", "baseline_iforest"):
+        assert (runs / f"{name}_synthetic" / "metrics.json").exists()
+    # default compare excludes synthetic runs → no metrics → exit 1
+    assert main(["compare", "--out", "results/c.md", "--figures-dir", "figs"]) == 1
+    assert "metrics.json" in capsys.readouterr().err
+    rc = main(
+        [
+            "compare",
+            "--runs",
+            *[str(p) for p in sorted(runs.glob("baseline_*"))],
+            "--out",
+            "results/c.md",
+            "--figures-dir",
+            "figs",
+        ]
+    )
+    assert rc == 0
+    assert "4 runs" in capsys.readouterr().out
+    md = (tmp_path / "results" / "c.md").read_text()
+    assert md.count("| `baseline_") == 4
+    assert (tmp_path / "figs" / "comparison_recall.png").exists()

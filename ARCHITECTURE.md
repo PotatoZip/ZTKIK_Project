@@ -28,14 +28,18 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
                V1..V28 unchanged
   → seeded split:  legit 60 / 20 / 20 % → train / val / test
                    fraud  0 / 50 / 50 %             (config data.fraud_val_fraction)
+     or temporal:  legit ordered by Time, cut 60 / 20 / 20 %; frauds by their own Time,
+                   train-window frauds dropped      (config data.split = "temporal", ablation)
   → StandardScaler fit on TRAIN only
   → data/processed/{splits.npz, scaler.joblib, feature_names.json, data_report.json}
     + report/figures/eda_{class_ratio,amount_distribution,fraud_rate_by_hour}.png
   → train.py  → runs/<name>/{config.toml, model.pt, history.csv}
   → scoring.py + threshold.py → scores_{val,test}.npz, threshold.json
   → evaluate.py + plots.py    → metrics.json (meets_target), figures/*_test.png
-  → scripts/run_ablations.sh  → runs/ae_<variant>/… (decision gate), results/ablations_phase4.md
-  → baselines.py              → runs/baseline_*/…, results/comparison.md
+  → baselines.py              → runs/baseline_{pca_k5,pca_k10,pca_k15,iforest}[_temporal]/…
+  → baselines.write_comparison (fraud-ae compare) → results/comparison.md,
+                                 report/figures/{comparison_recall,seed_variance}.png
+  → scripts/run_ablations.sh  → all AE variants + baselines + comparison in one go
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
@@ -59,10 +63,10 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `scoring.py` | residual-based anomaly scores + score/calibration I/O | `residuals`, `calibrate(model, X_val_legit)`, `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis`, `save_scores` / `load_scores` |
 | `threshold.py` | threshold strategies, alarm rule `score > threshold` | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `save_threshold` / `load_threshold` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg, seed) -> dict`, `recall_at_fpr`, `threshold_for_fpr`, `wilson_interval`, `bootstrap_ci`, `per_feature_summary`, `save_metrics` / `load_metrics` |
-| `baselines.py` | PCA reconstruction, Isolation Forest on the same splits | `run_baselines(cfg, splits, runs_root)` |
+| `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir)` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
-| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines|all`, all with `--synthetic` | `main(argv)`; paths resolve against the cwd |
-| `scripts/` | `run_ablations.sh` (decision-gate runs through the CLI), `summarize_runs.py` (Markdown table from `runs/*/metrics.json`) | – |
+| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines|all` (all with `--synthetic`) and `compare [--runs] [--out] [--figures-dir]` | `main(argv)`; paths resolve against the cwd |
+| `scripts/` | `run_ablations.sh`: every AE variant, both baseline sets and the comparison through the CLI | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
@@ -127,6 +131,26 @@ a second on CPU, so sweeps are cheap.
   variants are retrained from their own config rather than re-scoring `runs/ae_base`: training
   is deterministic, so the checkpoint is byte-identical and each run stays self-contained.
 
+### Baselines and comparison (Phase 5)
+* PCA(k), k ∈ {5, 10, 15}: `sklearn.decomposition.PCA(svd_solver="full")` fitted on train
+  legit; score = mean squared reconstruction error per row, i.e. the same units as the AE's
+  `mse`. A linear autoencoder with the same information bottleneck as the AE's latent 5.
+* Isolation Forest: 200 trees, `max_samples="auto"` (256), seeded, fitted on train legit;
+  score = `−score_samples` (higher = more anomalous).
+* Both use the same `choose_threshold` (0.9 % val-legit quantile) and the same `evaluate`, and
+  write the AE run-directory contract minus `model.pt` / `history.csv`, so `write_comparison`
+  needs no special cases. `fraud-ae baselines --config configs/ablation_temporal.toml` gives the
+  temporal-split baselines (`runs/baseline_*` from that config's `processed_dir`).
+* `fraud-ae compare` reads every `runs/*/metrics.json` (synthetic runs excluded, `--runs` to
+  pick), sorts by test recall, prints the Wilson intervals and the oracle recall@1 % FPR, groups
+  `<family>_seed<n>` directories into a seed-variance table (mean ± sample std), and draws the
+  bar chart (`comparison_recall.png`) and the seed box plot (`seed_variance.png`).
+* Temporal split (`data.split = "temporal"`): legit rows sorted by `Time`, cut at 60 / 80 %;
+  frauds assigned to val/test by their own `Time`; frauds in the train window are dropped and
+  counted in `data_report.json` (`rows.frauds_dropped_train_window`, `time_windows`). It is the
+  production-like protocol (train on the past, test on the future) and is run for the AE and
+  the baselines; it has fewer frauds per split, so wider intervals.
+
 ### Run-directory contract
 ```
 runs/<name>/ config.toml  model.pt  history.csv  train_summary.json
@@ -163,6 +187,10 @@ for everything.
 | 16 | Wilson intervals for every proportion plus a stratified bootstrap | 237 test frauds make a ±5 pp interval unavoidable; Wilson is closed-form and exact enough, the bootstrap also covers the re-derived threshold in recall@FPR |
 | 17 | `config.toml` snapshot = effective config when CLI overrides are used | `--seed` / `--epochs` runs would otherwise carry a snapshot that contradicts `train_summary.json` |
 | 18 | One run directory per experiment; ablations are configs + `scripts/run_ablations.sh`, not flags that mutate `runs/ae_base` | every table row maps to one `metrics.json` produced by the same three commands; nothing in the base run is overwritten by a variant |
+| 19 | Baselines reuse the AE's threshold rule, evaluator and run-directory contract | a like-for-like comparison: same splits, same 0.9 % val-legit quantile, same CIs; the comparison code has one code path |
+| 20 | PCA score = mean squared reconstruction error (same units as AE `mse`) | PCA is the linear special case of the AE; identical scoring isolates the effect of non-linearity |
+| 21 | Temporal split drops train-window frauds instead of moving them to val/test | moving them would evaluate on frauds older than the training data; dropping keeps "train on the past, test on the future" honest at the cost of fewer test frauds |
+| 22 | `fraud-ae compare` replaces the Phase 4 `summarize_runs.py` script | one Markdown writer for ablations, baselines and the Phase 6 report tables; figures and seed statistics come from the same rows |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.
