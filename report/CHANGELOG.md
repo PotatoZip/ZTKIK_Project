@@ -6,7 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned: Phase 6 (hardening + `report/report.md`).
+Nothing planned – submission package complete.
+
+## [1.0.0] – 2026-10-27 – Phase 6: hardening and report (milestone M3)
+
+### Added
+- `fraud_ae.report`: placeholder engine (`${path:key.path}` refs into `metrics.json`,
+  `threshold.json`, `train_summary.json`, `data_report.json`; `+ - * /`, `mean/std/min/max`
+  via an `ast` whitelist; formats `pct0..3`, `pp1`, `f0..4`, `int`, `verdict`, `str`),
+  `render`, `render_report`, `references`; CLI `fraud-ae report [--template] [--out]`.
+- `report/report_template.md` (source of truth, ≈ 310 artifact references) and the rendered
+  `report/report.md`: abstract, threat model and criterion consequences, data and leakage
+  controls, model and training, scoring and threshold, evaluation protocol, results (primary
+  verdict, ranking analysis, ablations, seed variance, baselines, temporal split, per-feature
+  residuals), discussion, limitations, conclusions, reproducibility, references; 10 figures.
+- `scripts/check.sh` (format check, lint, tests, version); `scripts/run_ablations.sh` now
+  copies the base-run figures and renders the report at the end.
+- Tests: `tests/test_report.py` (7: formats, expressions, error collection, file output, CLI
+  failure path, static template check, committed report ≡ fresh render when runs exist); suite
+  109 tests.
+
+### Changed
+- README: outcome summary and report link at the top, reproduction recipe, Phase 6 section,
+  status "all six phases done". ROADMAP Phase 6 outcome; ARCHITECTURE report section and ADR 23.
+- Version 0.5.0 → 1.0.0.
 
 ## [0.5.0] – 2026-10-27 – Phase 5: baselines and ablations
 

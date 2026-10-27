@@ -93,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default="results/comparison.md", help="Markdown output")
     p.add_argument("--figures-dir", default="report/figures", help="where the figures go")
 
+    p = sub.add_parser("report", help="Phase 6: render report/report.md from the run artifacts")
+    p.add_argument("--template", default="report/report_template.md")
+    p.add_argument("--out", default="report/report.md")
+
     p = sub.add_parser("all", help="Phases 1-4 in sequence")
     _add_config(p)
     _add_run(p)
@@ -364,6 +368,17 @@ def cmd_compare(runs: list[str] | None, out: str, figures_dir: str | None) -> in
     return 0
 
 
+def cmd_report(template: str, out: str) -> int:
+    from .report import ReportError, render_report
+
+    try:
+        path = render_report(project_root(), template, out)
+    except ReportError as exc:
+        raise ValueError(f"unresolved placeholders:\n{exc}") from exc
+    print(f"report written: {path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -383,6 +398,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_baselines(load_config(args.config), args.synthetic)
         if args.command == "compare":
             return cmd_compare(args.runs, args.out, args.figures_dir)
+        if args.command == "report":
+            return cmd_report(args.template, args.out)
         if args.command == "all":
             cfg = load_config(args.config)
             run = Path(args.run)

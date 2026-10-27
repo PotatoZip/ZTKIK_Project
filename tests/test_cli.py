@@ -10,7 +10,16 @@ def test_help_lists_all_phases(capsys):
         build_parser().parse_args(["--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for cmd in ("prepare", "train", "threshold", "evaluate", "baselines", "all"):
+    for cmd in (
+        "prepare",
+        "train",
+        "threshold",
+        "evaluate",
+        "baselines",
+        "compare",
+        "report",
+        "all",
+    ):
         assert cmd in out
 
 

@@ -39,7 +39,8 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
   → baselines.py              → runs/baseline_{pca_k5,pca_k10,pca_k15,iforest}[_temporal]/…
   → baselines.write_comparison (fraud-ae compare) → results/comparison.md,
                                  report/figures/{comparison_recall,seed_variance}.png
-  → scripts/run_ablations.sh  → all AE variants + baselines + comparison in one go
+  → report.py (fraud-ae report) → report/report.md rendered from report/report_template.md
+  → scripts/run_ablations.sh  → all AE variants + baselines + comparison + report in one go
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
@@ -65,8 +66,9 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg, seed) -> dict`, `recall_at_fpr`, `threshold_for_fpr`, `wilson_interval`, `bootstrap_ci`, `per_feature_summary`, `save_metrics` / `load_metrics` |
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir)` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
-| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines|all` (all with `--synthetic`) and `compare [--runs] [--out] [--figures-dir]` | `main(argv)`; paths resolve against the cwd |
-| `scripts/` | `run_ablations.sh`: every AE variant, both baseline sets and the comparison through the CLI | – |
+| `report.py` | render `report/report.md` from `report/report_template.md`; placeholders resolve to JSON artifact values with arithmetic and `mean/std/min/max` | `render(template, root)`, `render_report(root, template, out)`, `references(template)` |
+| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines|all` (all with `--synthetic`) `compare [--runs] [--out] [--figures-dir]` and `report [--template] [--out]` | `main(argv)`; paths resolve against the cwd |
+| `scripts/` | `run_ablations.sh`: every AE variant, both baseline sets, the comparison and the report through the CLI; `check.sh`: format check + lint + tests | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
@@ -151,6 +153,15 @@ a second on CPU, so sweeps are cheap.
   production-like protocol (train on the past, test on the future) and is run for the AE and
   the baselines; it has fewer frauds per split, so wider intervals.
 
+### Report rendering (Phase 6)
+`report/report_template.md` is the source of truth; `report/report.md` is generated and
+committed so that readers need no artifacts. A placeholder `{{ expr | fmt }}` contains refs
+`${path:key.path}` (`path` = a run directory → its `metrics.json`, or an explicit JSON file);
+`expr` may combine refs with `+ - * /` and `mean/std/min/max/abs` (evaluated through an
+`ast` whitelist, no `eval`); `fmt` ∈ `pct0..3`, `pp1`, `f0..4`, `int`, `verdict`, `str`.
+Rendering fails as a whole and lists every unresolved placeholder. The committed report is
+compared against a fresh render in the test suite whenever the real runs are present.
+
 ### Run-directory contract
 ```
 runs/<name>/ config.toml  model.pt  history.csv  train_summary.json
@@ -191,6 +202,7 @@ for everything.
 | 20 | PCA score = mean squared reconstruction error (same units as AE `mse`) | PCA is the linear special case of the AE; identical scoring isolates the effect of non-linearity |
 | 21 | Temporal split drops train-window frauds instead of moving them to val/test | moving them would evaluate on frauds older than the training data; dropping keeps "train on the past, test on the future" honest at the cost of fewer test frauds |
 | 22 | `fraud-ae compare` replaces the Phase 4 `summarize_runs.py` script | one Markdown writer for ablations, baselines and the Phase 6 report tables; figures and seed statistics come from the same rows |
+| 23 | The report is rendered from a template whose numbers are artifact references, and the rendered file is committed and tested against the artifacts | "every number traceable to a `metrics.json`" becomes a mechanical property instead of a reviewing effort; derived figures (differences, seed means) are computed at render time, never typed |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.
