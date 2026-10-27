@@ -80,6 +80,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("baselines", help="Phase 5: PCA and Isolation Forest baselines")
     _add_config(p)
+    p.add_argument(
+        "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
+    )
+
+    p = sub.add_parser("compare", help="Phase 5: comparison table + figures from run directories")
+    p.add_argument(
+        "--runs",
+        nargs="*",
+        help="run directories (default: every runs/* with metrics.json, synthetic ones excluded)",
+    )
+    p.add_argument("--out", default="results/comparison.md", help="Markdown output")
+    p.add_argument("--figures-dir", default="report/figures", help="where the figures go")
 
     p = sub.add_parser("all", help="Phases 1-4 in sequence")
     _add_config(p)
@@ -300,12 +312,55 @@ def cmd_evaluate(run: Path, synthetic: bool = False) -> int:
     return 0
 
 
-def cmd_baselines(cfg: Config) -> int:
+def cmd_baselines(cfg: Config, synthetic: bool = False) -> int:
+    """Phase 5: PCA(k) and Isolation Forest on the same splits, same threshold rule and
+    evaluator as the AE; one run directory each under ``runs/``."""
     from .baselines import run_baselines
     from .data import load_splits
 
+    splits = load_splits(_processed_dir(cfg, synthetic))
+    # run names carry the split so that the temporal baselines never overwrite the random ones
+    suffix = ("_temporal" if cfg.data.split == "temporal" else "") + (
+        SYNTHETIC_SUFFIX if synthetic else ""
+    )
+    results = run_baselines(cfg, splits, project_root() / "runs", suffix=suffix)
+    for name, m in results.items():
+        at, b = m["at_threshold"], m["baseline"]
+        extra = (
+            f"explained var {b['explained_variance_ratio']:.1%}"
+            if b["kind"] == "pca"
+            else f"{b['n_estimators']} trees"
+        )
+        print(
+            f"{name}: {b['model']} ({extra}, {b['wall_seconds']:.1f}s)  ROC-AUC {m['roc_auc']:.4f}"
+            f"  test recall {at['recall']:.1%} [{at['recall_ci_wilson'][0]:.1%}, "
+            f"{at['recall_ci_wilson'][1]:.1%}]  FPR {at['fpr']:.3%}  "
+            f"meets_target: {m['meets_target']}"
+        )
+    return 0
+
+
+def cmd_compare(runs: list[str] | None, out: str, figures_dir: str | None) -> int:
+    from .baselines import write_comparison
+    from .evaluate import METRICS_FILE
+
     root = project_root()
-    run_baselines(cfg, load_splits(root / cfg.data.processed_dir), root / "runs")
+    if runs:
+        dirs = [Path(r) for r in runs]
+    else:
+        dirs = sorted(
+            d
+            for d in (root / "runs").glob("*")
+            if (d / METRICS_FILE).exists() and SYNTHETIC_SUFFIX not in d.name
+        )
+    rows = write_comparison(dirs, Path(out), Path(figures_dir) if figures_dir else None)
+    print(f"{len(rows)} runs → {out}" + (f" (figures in {figures_dir})" if figures_dir else ""))
+    for r in rows:
+        lo, hi = r["recall_ci"]
+        print(
+            f"  {r['run']:<28} {r['model']:<28} test recall {r['recall']:.1%} "
+            f"[{lo:.1%}, {hi:.1%}] at FPR {r['fpr']:.3%}  {'✅' if r['meets_target'] else '❌'}"
+        )
     return 0
 
 
@@ -325,7 +380,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "evaluate":
             return cmd_evaluate(Path(args.run), args.synthetic)
         if args.command == "baselines":
-            return cmd_baselines(load_config(args.config))
+            return cmd_baselines(load_config(args.config), args.synthetic)
+        if args.command == "compare":
+            return cmd_compare(args.runs, args.out, args.figures_dir)
         if args.command == "all":
             cfg = load_config(args.config)
             run = Path(args.run)

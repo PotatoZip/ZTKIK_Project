@@ -6,7 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned: Phase 5 (baselines + comparison table with CIs), Phase 6 (hardening + report).
+Planned: Phase 6 (hardening + `report/report.md`).
+
+## [0.5.0] – 2026-10-27 – Phase 5: baselines and ablations
+
+### Added
+- `fraud_ae.baselines`: `fit_pca` / `pca_reconstruction_error` / `pca_scores` (k ∈ {5, 10, 15},
+  same MSE units as the AE), `fit_iforest` / `iforest_scores` (200 trees, seeded),
+  `run_baselines` writing the AE run-directory contract (minus `model.pt` / `history.csv`)
+  with the same val-legit quantile threshold and evaluator; `comparison_rows`,
+  `seed_families`, `comparison_markdown`, `write_comparison` → `results/comparison.md`.
+- `plots.baseline_comparison` (bars with Wilson whiskers, oracle recall@1 % FPR markers) and
+  `plots.seed_variance` (box + points per seed family).
+- CLI: `fraud-ae baselines --config <toml> [--synthetic]` (run names carry `_temporal` /
+  `_synthetic`), `fraud-ae compare [--runs …] [--out] [--figures-dir]`.
+- Temporal split: `data.split = "temporal"` (`data.temporal_split_indices`; frauds in the
+  training window are dropped and counted in `data_report.json` together with the time
+  windows); configs `ablation_temporal.toml` (own `data/processed_temporal`) and
+  `ablation_batchnorm.toml`.
+- `scripts/run_ablations.sh` now also runs BatchNorm, temporal, both baseline sets and the
+  comparison.
+- Tests: `tests/test_baselines.py` (8), three temporal-split tests in `tests/test_data.py`, a
+  baselines + compare CLI test; suite 102 tests.
+- Real results (`results/comparison.md`, 21 runs): random split PCA k = 5 / 10 / 15 → 58.6 % /
+  59.9 % / 70.0 %, Isolation Forest 56.1 %, AE 77.2 %; BatchNorm 75.9 % at FPR 1.001 %;
+  temporal split AE 73.0 % (oracle 79.7 %) vs PCA k = 15 60.8 %; seed variance 76.5 % ± 0.6 %.
+  Figures `report/figures/{comparison_recall,seed_variance}.png`. ADRs 19–22.
+
+### Changed
+- `train.snapshot_config` is public (used by the baselines).
+- `scripts/summarize_runs.py` removed; `fraud-ae compare` writes the tables instead
+  (`results/ablations_phase4.md` is kept as the Phase 4 record).
+- `.gitignore`: `data/processed_temporal/`.
+- Version 0.4.0 → 0.5.0.
 
 ## [0.4.0] – 2026-10-27 – Phase 4: evaluation and decision gate (milestone M2)
 

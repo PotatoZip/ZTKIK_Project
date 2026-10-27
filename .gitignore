@@ -4,6 +4,7 @@ data/raw/*
 data/processed/*
 data/processed_synthetic/
 data/processed_no_time/
+data/processed_temporal/
 runs/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep

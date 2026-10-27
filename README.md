@@ -29,9 +29,10 @@ uv run fraud-ae train     --config configs/base.toml --run runs/ae_synthetic --s
 uv run fraud-ae threshold --run runs/ae_base                              # 3. score val/test, threshold = val-legit quantile
 uv run fraud-ae threshold --run runs/ae_base --method mahalanobis --strategy youden   # variants (val only)
 uv run fraud-ae evaluate  --run runs/ae_base                              # 4. test-set metrics + CIs, meets_target, figures
-uv run fraud-ae baselines --config configs/base.toml                      # PCA + Isolation Forest
+uv run fraud-ae baselines --config configs/base.toml                      # 5. PCA k=5/10/15 + Isolation Forest → runs/baseline_*
+uv run fraud-ae compare   --out results/comparison.md --figures-dir report/figures   #    table + figures from runs/*/metrics.json
 uv run fraud-ae all       --config configs/base.toml --run runs/ae_base   # phases 1-4 (--synthetic for the toy set)
-scripts/run_ablations.sh                                                  # decision-gate runs → results/ablations_phase4.md
+scripts/run_ablations.sh                                                  # every AE variant + baselines + comparison (≈ 10 min)
 ```
 
 `prepare` writes `data/processed/{splits.npz, scaler.joblib, feature_names.json, data_report.json}`
@@ -49,21 +50,21 @@ model. Test labels are read for the first time by `evaluate`.
 ## Layout
 
 ```
-configs/        TOML experiments (base + ablations: latent size, no time feature, score method)
-scripts/        run_ablations.sh (decision-gate runs via the CLI), summarize_runs.py (table from runs/*/metrics.json)
+configs/        TOML experiments (base + ablations: latent size, no time feature, score method, BatchNorm, temporal split)
+scripts/        run_ablations.sh – every ablation run, the baselines and the comparison through the CLI
 src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, plots, cli
 tests/          pytest suite on the synthetic creditcard-like frame from fraud_ae.synthetic
 data/           raw/ (extracted CSV) and processed/ (splits, scaler, data_report.json) – git-ignored
 runs/           one directory per experiment – git-ignored
-results/        Markdown tables generated from runs/*/metrics.json (tracked)
+results/        comparison.md and ablations_phase4.md, generated from runs/*/metrics.json (tracked)
 report/         report.md (English), prompt_log.md, figures/
 ```
 
 ## Status
 
-Phases 0 (scaffold), 1 (data), 2 (training), 3 (threshold) and 4 (evaluation, milestone M2)
-done; phases 5–6 are tracked in `ROADMAP.md` and every change in `report/CHANGELOG.md`.
-`fraud-ae baselines` (Phase 5) still exits with code 2 and a "not implemented" message.
+Phases 0 (scaffold), 1 (data), 2 (training), 3 (threshold), 4 (evaluation, milestone M2) and
+5 (baselines and ablations) done; Phase 6 (report) is tracked in `ROADMAP.md` and every change
+in `report/CHANGELOG.md`.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -156,3 +157,43 @@ Seed-to-seed spread is ±0.7 pp, i.e. the gap is not noise. Selecting on validat
 protocol) would pick `mahalanobis`, which gives 77.6 % on test. Phases 5–6 therefore compare
 against the PCA and Isolation Forest baselines and report the shortfall with its causes rather
 than tuning further on the test set.
+
+### Phase 5 – baselines and ablations (`fraud-ae baselines`, `fraud-ae compare`)
+
+PCA(k) reconstruction error and a 200-tree Isolation Forest are fitted on the same 169 952
+legitimate training rows, thresholded with the same 0.9 % val-legit quantile and scored by the
+same evaluator, so every row below is one `runs/<name>/metrics.json`. Full table with ROC/PR-AUC,
+oracle recall at 1 % FPR and precision: `results/comparison.md`; figures
+`report/figures/comparison_recall.png` and `report/figures/seed_variance.png`.
+
+| Model (random split, 237 test frauds) | ROC-AUC | Test FPR | Test recall [Wilson 95 %] |
+|---|---:|---:|---|
+| **AE 31-20-10-5, `mse`** (`ae_base`) | 0.938 | 0.955 % | **77.2 %** [71.5, 82.1] |
+| AE, latent 3 / no hour feature (best variants) | 0.931 / 0.929 | 0.92 % / 0.93 % | 78.5 % [72.8, 83.2] |
+| AE + BatchNorm (`ae_batchnorm`) | 0.938 | 1.001 % | 75.9 % [70.1, 80.9] |
+| PCA k = 15 (`baseline_pca_k15`, 55.8 % variance) | 0.940 | 0.953 % | 70.0 % [63.9, 75.5] |
+| PCA k = 10 | 0.934 | 0.950 % | 59.9 % [53.6, 65.9] |
+| PCA k = 5 (same bottleneck as the AE) | 0.934 | 0.909 % | 58.6 % [52.3, 64.7] |
+| Isolation Forest (`baseline_iforest`) | 0.940 | 0.967 % | 56.1 % [49.8, 62.3] |
+
+* The non-linear AE beats the linear autoencoder with the same bottleneck by 19 pp and the
+  Isolation Forest by 21 pp at the same FPR, although all ROC-AUCs are ≈ 0.93–0.94: the
+  difference is concentrated in the low-FPR region that matters. No model meets the criterion.
+* BatchNorm (ADR 6) costs 1.3 pp and pushes the FPR to 1.001 %, i.e. it also fails the FPR half.
+* Seed variance (`ae_base`, seeds 0–3 and 42): val recall 83.7 % ± 0.6 %, test recall
+  76.5 % ± 0.6 % (75.9–77.2 %). The val–test gap of 7 pp is therefore systematic, not seed noise.
+
+**Temporal split** (`configs/ablation_temporal.toml`: train on the earliest 60 % of legitimate
+traffic, validate on the next 20 %, test on the last 20 %; frauds keep their own time, 342 of
+473 fall into the training window and are dropped → 57 val / 74 test frauds):
+
+| Model (temporal split, 74 test frauds) | ROC-AUC | Test FPR | Test recall [95 %] | Recall @ oracle 1 % FPR |
+|---|---:|---:|---|---:|
+| AE 31-20-10-5 (`ae_temporal`) | 0.951 | 0.528 % | 73.0 % [61.9, 81.8] | 79.7 % |
+| PCA k = 15 (`baseline_pca_k15_temporal`) | 0.963 | 0.558 % | 60.8 % [49.4, 71.1] | 78.4 % |
+| PCA k = 5 / Isolation Forest | 0.954 / 0.951 | 0.55 % / 0.64 % | 43.2 % / 39.2 % | 55.4 % / 55.4 % |
+
+The val-legit threshold transfers to a *lower* FPR on later traffic (0.53 % instead of 0.9 %),
+so the AE loses 7 pp of recall to threshold drift (73.0 % at the threshold vs 79.7 % at the
+oracle 1 % FPR); the ranking itself is as good as on the random split. Intervals are wide with
+74 frauds. The AE stays ahead of every baseline under both protocols.

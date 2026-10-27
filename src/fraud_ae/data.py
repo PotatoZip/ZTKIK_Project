@@ -146,10 +146,20 @@ def engineer_features(df: pd.DataFrame, cfg: DataConfig) -> pd.DataFrame:
     return X
 
 
-def split_indices(y: np.ndarray, cfg: DataConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Seeded split. Legit rows follow ``cfg.legit_fractions``; frauds go to val/test only
-    according to ``cfg.fraud_val_fraction``. Returns sorted (idx_train, idx_val, idx_test)."""
+def split_indices(
+    y: np.ndarray, cfg: DataConfig, time: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split into sorted ``(idx_train, idx_val, idx_test)``.
+
+    ``cfg.split == "random"`` (default): seeded shuffle; legit rows follow
+    ``cfg.legit_fractions``, frauds go to val/test only according to ``cfg.fraud_val_fraction``.
+    ``cfg.split == "temporal"``: see :func:`temporal_split_indices` (needs ``time``).
+    """
     y = np.asarray(y)
+    if cfg.split == "temporal":
+        if time is None:
+            raise ValueError("temporal split needs the Time column")
+        return temporal_split_indices(y, np.asarray(time), cfg)
     rng = np.random.default_rng(cfg.seed)
     legit = rng.permutation(np.flatnonzero(y == 0))
     fraud = rng.permutation(np.flatnonzero(y == 1))
@@ -166,6 +176,37 @@ def split_indices(y: np.ndarray, cfg: DataConfig) -> tuple[np.ndarray, np.ndarra
     idx_val = np.sort(np.r_[legit_val, fraud_val])
     idx_test = np.sort(np.r_[legit_test, fraud_test])
     return idx_train, idx_val, idx_test
+
+
+def temporal_split_indices(
+    y: np.ndarray, time: np.ndarray, cfg: DataConfig
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Chronological split (ablation, ARCHITECTURE.md §5): legit rows ordered by ``Time`` are cut
+    at ``cfg.legit_fractions`` into train / val / test windows; frauds are assigned to the val
+    or test window by their own ``Time``. Frauds inside the train window are **dropped** (train
+    is legit-only), so val/test hold fewer frauds than under the random split – the data report
+    records how many. ``seed`` and ``fraud_val_fraction`` are not used."""
+    y, time = np.asarray(y), np.asarray(time, dtype=np.float64)
+    if y.shape != time.shape:
+        raise ValueError("y and time must have the same shape")
+    order = np.lexsort((np.arange(len(y)), time))  # stable chronological order
+    legit = order[y[order] == 0]
+    f_train, f_val, _ = cfg.legit_fractions
+    n_train = int(round(f_train * len(legit)))
+    n_val = int(round(f_val * len(legit)))
+    legit_train, legit_val, legit_test = np.split(legit, [n_train, n_train + n_val])
+    if len(legit_train) == 0 or len(legit_val) == 0 or len(legit_test) == 0:
+        raise ValueError("temporal split produced an empty window")
+    t_train_end, t_val_end = time[legit_train[-1]], time[legit_val[-1]]
+    fraud = np.flatnonzero(y == 1)
+    tf = time[fraud]
+    fraud_val = fraud[(tf > t_train_end) & (tf <= t_val_end)]
+    fraud_test = fraud[tf > t_val_end]
+    return (
+        np.sort(legit_train),
+        np.sort(np.r_[legit_val, fraud_val]),
+        np.sort(np.r_[legit_test, fraud_test]),
+    )
 
 
 def fit_scaler(X_train: np.ndarray) -> StandardScaler:
@@ -223,9 +264,17 @@ def build_report(
         n_fraud = int(y[ids].sum())
         splits[name] = {"legit": int(len(ids) - n_fraud), "fraud": n_fraud, "total": int(len(ids))}
     n_fraud_total = int(y.sum())
+    n_fraud_used = sum(s["fraud"] for s in splits.values())
     return {
         "source": {"raw_csv": cfg.raw_csv, "zip_path": cfg.zip_path, "sha256": sha256},
-        "rows": {"raw": int(n_raw), "duplicates_dropped": int(n_dup), "after_dedupe": int(len(df))},
+        "rows": {
+            "raw": int(n_raw),
+            "duplicates_dropped": int(n_dup),
+            "after_dedupe": int(len(df)),
+            "frauds_dropped_train_window": int(n_fraud_total - n_fraud_used),
+        },
+        "split_strategy": cfg.split,
+        "time_windows": _time_windows(df["Time"].to_numpy(), idx),
         "class_balance": {
             "legit": int(len(df) - n_fraud_total),
             "fraud": n_fraud_total,
@@ -237,6 +286,14 @@ def build_report(
         "by_hour": _hourly_fraud_rate(df),
         "scaler": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()},
         "config": asdict(cfg),
+    }
+
+
+def _time_windows(time: np.ndarray, idx: tuple[np.ndarray, ...]) -> dict[str, list[float]]:
+    """``[min, max]`` of ``Time`` (seconds) per split – informative for the temporal split."""
+    return {
+        name: [float(time[ids].min()), float(time[ids].max())] if len(ids) else []
+        for name, ids in zip(("train", "val", "test"), idx, strict=True)
     }
 
 
@@ -291,7 +348,7 @@ def prepare(
     X_all = X_df.to_numpy(dtype=np.float64)
     y = df["Class"].to_numpy(dtype=np.int64)
 
-    idx_train, idx_val, idx_test = split_indices(y, cfg)
+    idx_train, idx_val, idx_test = split_indices(y, cfg, time=df["Time"].to_numpy())
     assert y[idx_train].sum() == 0, "leakage: fraud rows in the training split"
 
     scaler = fit_scaler(X_all[idx_train])
