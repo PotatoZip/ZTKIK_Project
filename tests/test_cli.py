@@ -16,7 +16,7 @@ def test_help_lists_all_phases(capsys):
 
 def test_unimplemented_phase_exits_with_code_2(capsys, monkeypatch, project_root):
     monkeypatch.chdir(project_root)
-    assert main(["threshold", "--run", "runs/none"]) == 2
+    assert main(["evaluate", "--run", "runs/none"]) == 2
     assert "not implemented" in capsys.readouterr().err
 
 
@@ -74,3 +74,58 @@ def test_train_without_prepare_exits_with_code_1(tmp_path, monkeypatch, project_
     monkeypatch.chdir(tmp_path)
     assert main(["train", "--config", "configs/base.toml", "--run", "runs/t"]) == 1
     assert "prepare" in capsys.readouterr().err
+
+
+def test_threshold_synthetic_end_to_end(tmp_path, monkeypatch, project_root, capsys):
+    (tmp_path / "configs").mkdir()
+    shutil.copy(project_root / "configs" / "base.toml", tmp_path / "configs" / "base.toml")
+    monkeypatch.chdir(tmp_path)
+    assert main(["prepare", "--config", "configs/base.toml", "--synthetic"]) == 0
+    assert (
+        main(
+            [
+                "train",
+                "--config",
+                "configs/base.toml",
+                "--run",
+                "runs/t",
+                "--synthetic",
+                "--epochs",
+                "3",
+            ]
+        )
+        == 0
+    )
+    assert main(["threshold", "--run", "runs/t", "--synthetic"]) == 0
+    out = capsys.readouterr().out
+    assert "strategy: quantile" in out and "val FPR" in out
+    run = tmp_path / "runs" / "t"
+    for name in ("scores_val.npz", "scores_test.npz", "threshold.json", "score_calibration.npz"):
+        assert (run / name).exists()
+    assert (run / "figures" / "score_histogram_val.png").exists()
+    # overrides are honoured and recorded
+    assert (
+        main(
+            [
+                "threshold",
+                "--run",
+                "runs/t",
+                "--synthetic",
+                "--method",
+                "mahalanobis",
+                "--strategy",
+                "max_f1",
+            ]
+        )
+        == 0
+    )
+    import json
+
+    t = json.loads((run / "threshold.json").read_text())
+    assert t["score_method"] == "mahalanobis" and t["strategy"] == "max_f1"
+
+
+def test_threshold_before_train_exits_with_code_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["threshold", "--run", "runs/none"]) == 1
+    assert "config.toml" in capsys.readouterr().err

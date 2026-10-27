@@ -191,8 +191,49 @@ def training_curves(history_csv: Path, out: Path) -> Path:
     return _save(fig, out)
 
 
-def score_histogram(scores: np.ndarray, y: np.ndarray, threshold: float, out: Path) -> Path:
-    raise NotImplementedError("Phase 3")
+def score_histogram(
+    scores: np.ndarray, y: np.ndarray, threshold: float, out: Path, title: str = ""
+) -> Path:
+    """Density of log10(score) per class with the threshold and the resulting legit FPR."""
+    scores = np.asarray(scores, dtype=float)
+    y = np.asarray(y)
+    log_s = np.log10(np.maximum(scores, 1e-12))
+    legit, fraud = log_s[y == 0], log_s[y == 1]
+    bins = np.linspace(log_s.min(), log_s.max() + 1e-9, 60)
+    fpr = float((scores[y == 0] > threshold).mean()) if (y == 0).any() else float("nan")
+    fig, ax = plt.subplots(figsize=(6.5, 3.4))
+    ax.hist(
+        legit,
+        bins=bins,
+        density=True,
+        histtype="stepfilled",
+        alpha=0.35,
+        color=COLOR_LEGIT,
+        label=f"legit (n={len(legit):,})",
+    )
+    if fraud.size:
+        rec = float((scores[y == 1] > threshold).mean())
+        ax.hist(
+            fraud,
+            bins=bins,
+            density=True,
+            histtype="step",
+            linewidth=2,
+            color=COLOR_FRAUD,
+            label=f"fraud (n={len(fraud):,}, recall {rec:.1%})",
+        )
+    ax.axvline(
+        np.log10(max(threshold, 1e-12)),
+        color=COLOR_TEXT,
+        linestyle="--",
+        linewidth=1.2,
+        label=f"threshold {threshold:.3g} (legit FPR {fpr:.2%})",
+    )
+    ax.set_xlabel("log10(anomaly score)")
+    ax.set_ylabel("density")
+    ax.set_title(title or "Anomaly-score distribution and threshold")
+    ax.legend(loc="upper right")
+    return _save(fig, out)
 
 
 def roc_pr_curves(scores: np.ndarray, y: np.ndarray, out: Path) -> Path:
