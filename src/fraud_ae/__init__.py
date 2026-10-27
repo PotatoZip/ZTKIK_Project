@@ -8,4 +8,4 @@ Pipeline phases (mirroring the course abstract):
 Baselines (PCA reconstruction, Isolation Forest) live in ``baselines``.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

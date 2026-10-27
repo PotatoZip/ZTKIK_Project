@@ -6,8 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned: Phase 4 (evaluation + criterion check, decision gate), Phase 5 (baselines + ablations),
-Phase 6 (hardening + report).
+Planned: Phase 5 (baselines + comparison table with CIs), Phase 6 (hardening + report).
+
+## [0.4.0] – 2026-10-27 – Phase 4: evaluation and decision gate (milestone M2)
+
+### Added
+- `fraud_ae.evaluate`: `wilson_interval`, `threshold_for_fpr` / `recall_at_fpr` (oracle
+  operating points on test legit), `confusion_at_threshold`, `rates_from_confusion`,
+  `bootstrap_ci` (stratified, seeded), `evaluate` → `metrics.json` with ROC-AUC, PR-AUC,
+  recall@FPR grid, confusion matrix and rates at the val-chosen threshold, Wilson and bootstrap
+  CIs, `criterion` (`fp_allowed`, `tp_required`) and `meets_target`; `per_feature_summary`;
+  `save_metrics` / `load_metrics`.
+- `plots`: `roc_pr_curves` (log FPR axis), `recall_vs_fpr` (criterion region + operating point),
+  `threshold_sweep`, `per_feature_residuals`.
+- CLI: `fraud-ae evaluate --run <dir> [--synthetic]` (first and only reader of test labels),
+  `train --seed`, `all --synthetic`; `fraud-ae all` now runs phases 1–4.
+- `train` rejects processed splits whose feature count disagrees with the config.
+- Configs `ablation_score_standardized.toml`, `ablation_score_mahalanobis.toml`;
+  `ablation_no_time.toml` now uses its own `data/processed_no_time`.
+- `scripts/run_ablations.sh` (decision-gate runs through the CLI) and
+  `scripts/summarize_runs.py` → `results/ablations_phase4.md` (tracked).
+- Tests: `tests/test_evaluate.py` (17, the two Phase 4 xfails flipped to pass), four CLI tests
+  (evaluate end-to-end, missing threshold → exit 1, `all --synthetic`, feature-count guard).
+- Real results: `runs/ae_base` test recall 77.2 % [71.5 %, 82.1 %] at FPR 0.955 %, criterion
+  not met; 11 gate runs at 75.9–78.5 %. Figures `report/figures/*_test_ae_base.png`.
+  ADRs 15–18 in `ARCHITECTURE.md`.
+
+### Changed
+- `config.toml` run snapshot is the *effective* config (with a header) when `--epochs` /
+  `--seed` overrides were used, instead of a verbatim copy that contradicts the run.
+- `.gitignore`: `data/processed_no_time/`.
+- Version 0.3.0 → 0.4.0.
 
 ## [0.3.0] – 2026-10-27 – Phase 3: scoring and threshold
 

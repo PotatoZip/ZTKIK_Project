@@ -12,7 +12,7 @@ compared against PCA-reconstruction and Isolation Forest baselines.
 | 1 | **Data** (abstract phase 1) ✅ | unzip + sha256, dedupe, `log1p(Amount)`, hour-of-day sin/cos, seeded split (train = legit only), scaler fit on train, EDA | `data.py`, `synthetic.py`, `prepare [--synthetic]`, `data_report.json`, EDA figures (class ratio, Amount distribution, fraud rate by hour) | split invariants tested (`tests/test_data.py`, 19 tests pass); split-size table in README; sha256 pinned in configs | 1 session |
 | 2 | **Train** (abstract phase 2) ✅ | training loop, early stopping on val-legit MSE, checkpoints, seeding | `train.py`, `train [--synthetic] [--epochs]`, `runs/ae_base/{config.toml,model.pt,history.csv,train_summary.json}`, `report/figures/training_curves_ae_base.png` | val MSE converges (0.770 → 0.420); same seed → identical losses and byte-identical `model.pt` (tested) | 1 session |
 | 3 | **Threshold** (abstract phase 3) ✅ | scoring (`mse`, `standardized`, `mahalanobis`), threshold strategies | `scoring.py`, `threshold.py`, `threshold [--method] [--strategy] [--target-fpr] [--synthetic]`, `runs/ae_base/{scores_val,scores_test,score_calibration}.npz`, `threshold.json`, `report/figures/score_histogram_val_ae_base.png` | val FPR = 0.900 % with the quantile strategy; quantile property tests pass (24 Phase 3 tests) | 0.5 session |
-| 4 | **Evaluate** (abstract phase 4) | ROC/PR-AUC, recall@FPR grid, confusion matrix, Wilson + bootstrap CIs, figures, criterion check | `evaluate.py`, `plots.py`, `metrics.json`, ROC/PR/recall-vs-FPR/threshold-sweep/per-feature figures | **Decision gate:** `meets_target` true → Phase 5; false → run scoring variants, latent sweep (`configs/ablation_latent_*`), `ablation_no_time`, 5 seeds, then re-evaluate | 1 session |
+| 4 | **Evaluate** (abstract phase 4) ✅ | ROC/PR-AUC, recall@FPR grid, confusion matrix, Wilson + bootstrap CIs, figures, criterion check | `evaluate.py`, `plots.py`, `evaluate [--synthetic]`, `train --seed`, `runs/ae_base/metrics.json`, `report/figures/*_test_ae_base.png`, `scripts/run_ablations.sh`, `results/ablations_phase4.md` | **Decision gate taken:** `meets_target` false on test (recall 77.2 % [71.5, 82.1] at FPR 0.955 %); scoring variants, latent 3/8, no-time, 200 epochs and 5 seeds all land at 75.9–78.5 % → shortfall documented, Phase 5 compares against baselines | 1 session |
 | 5 | **Baselines & ablations** | PCA(k ∈ {5,10,15}), Isolation Forest; ablations: scoring method, latent size, Time feature, BatchNorm, 5 seeds, temporal split | `baselines.py`, `results/comparison.md`, box/bar plots | comparison table complete with CIs; seed variance reported | 1–1.5 sessions |
 | 6 | **Hardening & report** | tests green, README final, `report/report.md` (English), `report/prompt_log.md`, limitations + threat-model discussion | submission package | every number in the report traceable to a `metrics.json`; `fraud-ae all` + `baselines` reproduce it | 1 session |
 
@@ -55,11 +55,39 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
 * Synthetic smoke run: val FPR 1.0 % (granularity 1/400), val recall 100 %; all three methods
   reach ≥ 50 % recall at 5 % FPR in the tests.
 
+### Phase 4 outcome (2026-10-27, milestone M2)
+
+* `runs/ae_base` on the untouched test set (56 650 legit / 237 fraud) at the val-chosen
+  threshold 1.862: TP 183, FP 541 → recall **77.2 %** (Wilson [71.5 %, 82.1 %], bootstrap
+  [71.7 %, 82.3 %]), FPR 0.955 % [0.878 %, 1.038 %], precision 25.3 %. ROC-AUC 0.938, PR-AUC
+  0.538. Criterion **not met** (needs TP ≥ 202, FP ≤ 566; FPR part holds).
+* Ranking quality, not threshold transfer, is the limit: recall at oracle test FPR 1 % is also
+  77.2 %, the curve plateaus at 77–79 % from 0.3 % to 2 % FPR and crosses 85 % only near 7 %.
+  About a fifth of the test frauds reconstruct like legit rows. Largest fraud/legit residual
+  ratios: V17, V14, V12, V10, V16.
+* Decision gate executed (`scripts/run_ablations.sh`, `results/ablations_phase4.md`, 11 runs,
+  ≈ 40 s each): `standardized` 76.4 %, `mahalanobis` 77.6 %, latent 3 / 8 → 78.5 % / 77.6 %,
+  no hour-of-day feature 78.5 %, 200 epochs 77.2 %, seeds 0–3 → 75.9–76.8 % (5-seed mean
+  76.5 %, spread ±0.7 pp). Every upper confidence bound is ≤ 83.2 %. Validation recall is
+  83–86 % for all variants, so the val half of the frauds is systematically easier than the
+  test half (6–8 pp); with 236 / 237 frauds per half this is within the sampling variance the
+  risk table anticipated, but it means the 85 % claim cannot be made for this model family.
+* Found while running the gate: `ablation_no_time.toml` shared `data/processed` with base, so
+  its first run silently trained on 31 features. Fixed with a per-config `processed_dir` and a
+  feature-count guard in `train` (tested).
+* Synthetic smoke run (`evaluate --synthetic`): ROC-AUC 1.0, recall 100 %, FPR 1.5 %
+  (6 of 400 – the 0.9 % quantile on 400 val rows has 0.25 % granularity), i.e. the toy set
+  exercises the code path but is too small to pass the FPR part by construction.
+* Consequence for Phases 5–6: the report presents the plain and the best configuration with
+  CIs, compares against PCA / Isolation Forest, and discusses the shortfall (point-anomaly
+  detector on PCA-obfuscated features, fraud subpopulation indistinguishable by reconstruction
+  error) instead of tuning on the test set.
+
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| Plain-MSE AE lands at 80–84 % recall @ 1 % FPR (literature band 0.80–0.90) | scoring variants, bottleneck sweep, drop `Time`, multi-seed averaging; report both plain and best configuration |
+| Plain-MSE AE lands at 80–84 % recall @ 1 % FPR (literature band 0.80–0.90) | **materialised, worse than feared (77 % on test, 84 % on val)**: scoring variants, bottleneck sweep, drop `Time`, 5 seeds all 76–79 %; report both plain and best configuration with CIs, no further test-set tuning |
 | Test FPR slightly above 1 % from sampling noise | threshold targets 0.9 % on val; report CI |
 | Leakage (scaler, duplicates, threshold tuned on test) | unit-tested invariants; test set touched once in Phase 4 |
 | Non-determinism | seeds + deterministic torch; seed variance reported |

@@ -3,6 +3,7 @@ dataset.zip
 data/raw/*
 data/processed/*
 data/processed_synthetic/
+data/processed_no_time/
 runs/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep

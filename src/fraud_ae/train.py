@@ -83,17 +83,23 @@ def mse_per_sample(model: nn.Module, X: torch.Tensor, batch_size: int = 8192) ->
 
 
 def _snapshot_config(cfg: Config, run_dir: Path) -> None:
+    """Write ``config.toml``: a verbatim copy of the source file, or – when CLI overrides such as
+    ``--epochs`` / ``--seed`` changed it – the *effective* config written by hand (stdlib has
+    no TOML writer) with a header naming the source file."""
+    from .config import load_config
+
     dst = run_dir / CONFIG_FILE
-    if cfg.source_path and Path(cfg.source_path).exists():
-        shutil.copyfile(cfg.source_path, dst)
-    else:  # no file to copy – write a minimal TOML by hand (stdlib has no writer)
-        lines = []
-        for section, values in cfg.to_dict().items():
-            lines.append(f"[{section}]")
-            for k, v in values.items():
-                lines.append(f"{k} = {json.dumps(v)}")
-            lines.append("")
-        dst.write_text("\n".join(lines))
+    src = Path(cfg.source_path) if cfg.source_path else None
+    if src is not None and src.exists() and load_config(src) == cfg:
+        shutil.copyfile(src, dst)
+        return
+    lines = [f"# effective config (CLI overrides applied) derived from {src or '<in-memory>'}", ""]
+    for section, values in cfg.to_dict().items():
+        lines.append(f"[{section}]")
+        for k, v in values.items():
+            lines.append(f"{k} = {json.dumps(v)}")
+        lines.append("")
+    dst.write_text("\n".join(lines))
 
 
 def train(cfg: Config, X_train: np.ndarray, X_val_legit: np.ndarray, run_dir: Path) -> Autoencoder:

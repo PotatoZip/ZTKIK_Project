@@ -237,23 +237,161 @@ def score_histogram(
 
 
 def roc_pr_curves(scores: np.ndarray, y: np.ndarray, out: Path) -> Path:
-    raise NotImplementedError("Phase 4")
+    """ROC (FPR on a log axis, since only FPR < 1 % matters) and precision-recall curves."""
+    from sklearn.metrics import (
+        average_precision_score,
+        precision_recall_curve,
+        roc_auc_score,
+        roc_curve,
+    )
+
+    scores, y = np.asarray(scores, dtype=float), np.asarray(y)
+    fpr, tpr, _ = roc_curve(y, scores)
+    prec, rec, _ = precision_recall_curve(y, scores)
+    auc, ap = roc_auc_score(y, scores), average_precision_score(y, scores)
+    n_legit = int((y == 0).sum())
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.6))
+    ax1.plot(np.maximum(fpr, 0.5 / n_legit), tpr, color=COLOR_FRAUD, linewidth=2)
+    ax1.set_xscale("log")
+    ax1.set_xlim(0.5 / n_legit, 1)
+    ax1.set_ylim(0, 1.02)
+    ax1.axvline(0.01, color=COLOR_TEXT, linestyle="--", linewidth=1)
+    ax1.annotate(
+        "FPR 1 %", (0.01, 0.03), xytext=(4, 0), textcoords="offset points", color=COLOR_TEXT
+    )
+    ax1.set_xlabel("false-positive rate (log)")
+    ax1.set_ylabel("recall (true-positive rate)")
+    ax1.set_title(f"ROC – AUC {auc:.4f}")
+    ax1.grid(axis="x")
+
+    ax2.plot(rec, prec, color=COLOR_FRAUD, linewidth=2)
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1.02)
+    ax2.set_xlabel("recall")
+    ax2.set_ylabel("precision")
+    ax2.set_title(f"Precision–recall – AP {ap:.4f}")
+    fig.tight_layout()
+    return _save(fig, out)
 
 
 def recall_vs_fpr(
-    scores: np.ndarray, y: np.ndarray, target: tuple[float, float], out: Path
+    scores: np.ndarray,
+    y: np.ndarray,
+    target: tuple[float, float],
+    out: Path,
+    threshold: float | None = None,
 ) -> Path:
-    raise NotImplementedError("Phase 4")
+    """Recall as a function of FPR (log axis) with the (target FPR, target recall) marker; the
+    shaded box is the region where the criterion holds. ``threshold`` marks the Phase 3
+    operating point."""
+    from sklearn.metrics import roc_curve
+
+    scores, y = np.asarray(scores, dtype=float), np.asarray(y)
+    target_fpr, target_recall = target
+    fpr, tpr, _ = roc_curve(y, scores)
+    n_legit = int((y == 0).sum())
+    x_min = 0.5 / n_legit
+
+    fig, ax = plt.subplots(figsize=(6.5, 3.8))
+    ax.axvspan(x_min, target_fpr, ymin=target_recall, ymax=1.0, color=COLOR_LEGIT, alpha=0.10, lw=0)
+    ax.step(
+        np.maximum(fpr, x_min),
+        tpr,
+        where="post",
+        color=COLOR_FRAUD,
+        linewidth=2,
+        label="recall vs FPR (test)",
+    )
+    ax.axvline(target_fpr, color=COLOR_TEXT, linestyle="--", linewidth=1)
+    ax.axhline(target_recall, color=COLOR_TEXT, linestyle="--", linewidth=1)
+    ax.scatter(
+        [target_fpr],
+        [target_recall],
+        marker="x",
+        s=60,
+        color=COLOR_TEXT,
+        zorder=4,
+        label=f"target: recall {target_recall:.0%} @ FPR {target_fpr:.0%}",
+    )
+    if threshold is not None:
+        legit, fraud = scores[y == 0], scores[y == 1]
+        op_fpr = float((legit > threshold).mean())
+        op_rec = float((fraud > threshold).mean()) if fraud.size else float("nan")
+        ax.scatter(
+            [max(op_fpr, x_min)],
+            [op_rec],
+            s=50,
+            color=COLOR_LEGIT,
+            zorder=5,
+            label=f"val-chosen threshold: recall {op_rec:.1%} @ FPR {op_fpr:.2%}",
+        )
+    ax.set_xscale("log")
+    ax.set_xlim(x_min, 1)
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("false-positive rate on legitimate test rows (log)")
+    ax.set_ylabel("recall on test frauds")
+    ax.set_title("Recall vs FPR – criterion region shaded")
+    ax.grid(axis="x")
+    ax.legend(loc="lower right")
+    return _save(fig, out)
 
 
 def threshold_sweep(scores: np.ndarray, y: np.ndarray, threshold: float, out: Path) -> Path:
-    raise NotImplementedError("Phase 4")
+    """Recall, FPR and precision as functions of the threshold (log x), chosen threshold marked."""
+    scores, y = np.asarray(scores, dtype=float), np.asarray(y)
+    legit, fraud = scores[y == 0], scores[y == 1]
+    lo = max(np.percentile(scores, 1), 1e-12)
+    grid = np.logspace(np.log10(lo), np.log10(scores.max()), 300)
+    legit_s, fraud_s = np.sort(legit), np.sort(fraud)
+    fp = legit_s.size - np.searchsorted(legit_s, grid, side="right")
+    tp = fraud_s.size - np.searchsorted(fraud_s, grid, side="right")
+    fpr = fp / max(legit_s.size, 1)
+    rec = tp / max(fraud_s.size, 1)
+    prec = np.divide(tp, tp + fp, out=np.zeros_like(grid), where=(tp + fp) > 0)
+
+    fig, ax = plt.subplots(figsize=(6.5, 3.6))
+    ax.plot(grid, rec, color=COLOR_FRAUD, linewidth=2, label="recall")
+    ax.plot(grid, fpr, color=COLOR_LEGIT, linewidth=2, label="FPR")
+    ax.plot(grid, prec, color=COLOR_TEXT, linewidth=1.5, linestyle=":", label="precision")
+    ax.axvline(
+        threshold, color=COLOR_TEXT, linestyle="--", linewidth=1, label=f"threshold {threshold:.3g}"
+    )
+    ax.set_xscale("log")
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("threshold on the anomaly score (log)")
+    ax.set_ylabel("rate")
+    ax.set_title("Threshold sweep on the test set")
+    ax.legend(loc="center right")
+    return _save(fig, out)
 
 
 def per_feature_residuals(
     residuals: np.ndarray, y: np.ndarray, feature_names: tuple[str, ...], out: Path
 ) -> Path:
-    raise NotImplementedError("Phase 4")
+    """Mean squared residual per input feature, legit vs fraud, sorted by the fraud/legit ratio
+    (which features the autoencoder fails to reconstruct for frauds)."""
+    R = np.asarray(residuals, dtype=float)
+    y = np.asarray(y)
+    legit = (R[y == 0] ** 2).mean(axis=0)
+    fraud = (R[y == 1] ** 2).mean(axis=0) if (y == 1).any() else np.zeros(R.shape[1])
+    order = np.argsort(fraud / np.maximum(legit, 1e-12))[::-1]
+    names = [feature_names[i] for i in order]
+    pos = np.arange(len(names))
+
+    fig, ax = plt.subplots(figsize=(6.5, 0.22 * len(names) + 1.4))
+    ax.barh(pos - 0.2, legit[order], height=0.4, color=COLOR_LEGIT, label="legit")
+    ax.barh(pos + 0.2, fraud[order], height=0.4, color=COLOR_FRAUD, label="fraud")
+    ax.set_yticks(pos)
+    ax.set_yticklabels(names)
+    ax.invert_yaxis()
+    ax.set_xscale("log")
+    ax.grid(axis="x")
+    ax.grid(False, axis="y")
+    ax.set_xlabel("mean squared residual (standardized units, log)")
+    ax.set_title("Per-feature reconstruction error on the test set (sorted by fraud/legit ratio)")
+    ax.legend(loc="lower right")
+    return _save(fig, out)
 
 
 def baseline_comparison(metrics_by_run: dict[str, dict], out: Path) -> Path:
