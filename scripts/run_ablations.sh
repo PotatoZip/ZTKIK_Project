@@ -37,3 +37,9 @@ done
 uv run fraud-ae baselines --config configs/base.toml
 uv run fraud-ae baselines --config configs/ablation_temporal.toml
 uv run fraud-ae compare --out results/comparison.md --figures-dir report/figures
+
+# Phase 6: copy the base-run figures the report embeds, then render the report from the artifacts
+for f in training_curves score_histogram_val roc_pr_test recall_vs_fpr_test threshold_sweep_test score_histogram_test per_feature_residuals_test; do
+  cp "runs/ae_base/figures/$f.png" "report/figures/${f}_ae_base.png"
+done
+uv run fraud-ae report

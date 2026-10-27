@@ -14,7 +14,7 @@ compared against PCA-reconstruction and Isolation Forest baselines.
 | 3 | **Threshold** (abstract phase 3) ✅ | scoring (`mse`, `standardized`, `mahalanobis`), threshold strategies | `scoring.py`, `threshold.py`, `threshold [--method] [--strategy] [--target-fpr] [--synthetic]`, `runs/ae_base/{scores_val,scores_test,score_calibration}.npz`, `threshold.json`, `report/figures/score_histogram_val_ae_base.png` | val FPR = 0.900 % with the quantile strategy; quantile property tests pass (24 Phase 3 tests) | 0.5 session |
 | 4 | **Evaluate** (abstract phase 4) ✅ | ROC/PR-AUC, recall@FPR grid, confusion matrix, Wilson + bootstrap CIs, figures, criterion check | `evaluate.py`, `plots.py`, `evaluate [--synthetic]`, `train --seed`, `runs/ae_base/metrics.json`, `report/figures/*_test_ae_base.png`, `scripts/run_ablations.sh`, `results/ablations_phase4.md` | **Decision gate taken:** `meets_target` false on test (recall 77.2 % [71.5, 82.1] at FPR 0.955 %); scoring variants, latent 3/8, no-time, 200 epochs and 5 seeds all land at 75.9–78.5 % → shortfall documented, Phase 5 compares against baselines | 1 session |
 | 5 | **Baselines & ablations** ✅ | PCA(k ∈ {5,10,15}), Isolation Forest; ablations: scoring method, latent size, Time feature, BatchNorm, 5 seeds, temporal split | `baselines.py`, `baselines [--synthetic]`, `compare`, `configs/ablation_{batchnorm,temporal}.toml`, `data.split = "temporal"`, `results/comparison.md` (21 runs), `report/figures/{comparison_recall,seed_variance}.png` | comparison table complete with Wilson CIs; seed variance 76.5 % ± 0.6 % (5 seeds); AE 77.2 % vs best baseline PCA k=15 70.0 % at the same FPR | 1 session |
-| 6 | **Hardening & report** | tests green, README final, `report/report.md` (English), `report/prompt_log.md`, limitations + threat-model discussion | submission package | every number in the report traceable to a `metrics.json`; `fraud-ae all` + `baselines` reproduce it | 1 session |
+| 6 | **Hardening & report** ✅ | tests green, README final, `report/report.md` (English), `report/prompt_log.md`, limitations + threat-model discussion | `report.py`, `fraud-ae report`, `report/report_template.md` → `report/report.md`, `scripts/check.sh`, README final, CHANGELOG 1.0.0 | every number in the report is a placeholder resolved from a JSON artifact (tested: committed report ≡ render of the artifacts); `fraud-ae all` + `scripts/run_ablations.sh` reproduce everything in ≈ 10 min; 109 tests, ruff clean | 1 session |
 
 Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict (end of Phase 4) ·
 **M3** submission package (end of Phase 6). Total ≈ 6–7 working sessions.
@@ -106,6 +106,25 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
   split; the deep AE is the best of the compared unsupervised detectors by a wide margin, and
   the shortfall is a property of the fraud subpopulation that is reconstructable from legitimate
   structure, not of threshold choice, bottleneck size, time encoding, normalisation or seed.
+
+### Phase 6 outcome (2026-10-27, milestone M3)
+
+* `src/fraud_ae/report.py` + `fraud-ae report`: `report/report.md` is rendered from
+  `report/report_template.md`; placeholders reference `runs/<run>/{metrics,threshold,
+  train_summary}.json` and `data/processed*/data_report.json`, with arithmetic and
+  `mean/std/min/max` for derived figures (seed statistics, differences in pp). The template holds
+  about 310 references; the unit test `test_tracked_report_matches_artifacts` fails if the
+  committed report and the artifacts ever disagree.
+* Report (≈ 3 900 words, 10 figures, 7 tables) follows the planned outline: threat model and the
+  precision consequence of the criterion, data/leakage controls, model, threshold, protocol,
+  primary verdict, ranking analysis, ablations, seed variance, baselines, temporal split,
+  per-feature residuals, discussion, limitations, conclusions, reproducibility, references.
+* Hardening: `scripts/check.sh` (format check, lint, tests, version); `scripts/run_ablations.sh`
+  ends with the figure copy and `fraud-ae report`, so one script regenerates every table,
+  figure and the report from scratch. 109 tests pass; ruff format/check clean.
+* Final verdict carried into the report: recall 77.2 % [71.5 %, 82.1 %] at FPR 0.955 % –
+  criterion not met; AE best of the compared detectors (+7.2 pp over PCA k = 15, +21.1 pp over
+  Isolation Forest at the same FPR).
 
 ## Risks
 

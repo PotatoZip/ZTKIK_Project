@@ -5,7 +5,13 @@ transactions; a transaction is flagged as fraud when its reconstruction error (M
 threshold chosen on legitimate validation data. Success criterion from the abstract:
 **recall ≥ 85 % at false-positive rate < 1 %** on a held-out test set.
 
-* Abstract: `tmp.md` · Roadmap: `ROADMAP.md` · Design and decisions: `ARCHITECTURE.md`
+* **Report: `report/report.md`** (rendered from `report/report_template.md` by `fraud-ae report`;
+  every number comes from a JSON artifact) · Abstract: `tmp.md` · Roadmap: `ROADMAP.md` ·
+  Design and decisions: `ARCHITECTURE.md` · Changelog: `report/CHANGELOG.md` · Prompt log:
+  `report/prompt_log.md`
+* **Outcome in one line:** test recall **77.2 %** [71.5 %, 82.1 %] at FPR 0.955 % – the FPR half
+  of the criterion holds, the 85 % recall half does not, for the base model and all eleven
+  variants; the AE still beats PCA (70.0 % at best) and Isolation Forest (56.1 %) at the same FPR.
 * Dataset: Kaggle *Credit Card Fraud Detection* (ULB MLG), 284 807 transactions, 492 frauds
   (283 726 / 473 after dropping 1 081 exact duplicates). Place the Kaggle zip at `dataset.zip`
   (git-ignored); `fraud-ae prepare` extracts it and verifies the CSV's sha256 pinned in the configs.
@@ -17,6 +23,7 @@ uv sync --group dev          # creates .venv with the CPU torch wheel
 uv run fraud-ae --help
 uv run pytest                # unit tests use a synthetic dataset, no download needed
 uv run ruff check src tests
+scripts/check.sh             # format check + lint + tests + version (the hardening gate)
 ```
 
 ## Running the four project phases
@@ -31,9 +38,16 @@ uv run fraud-ae threshold --run runs/ae_base --method mahalanobis --strategy you
 uv run fraud-ae evaluate  --run runs/ae_base                              # 4. test-set metrics + CIs, meets_target, figures
 uv run fraud-ae baselines --config configs/base.toml                      # 5. PCA k=5/10/15 + Isolation Forest → runs/baseline_*
 uv run fraud-ae compare   --out results/comparison.md --figures-dir report/figures   #    table + figures from runs/*/metrics.json
+uv run fraud-ae report                                                    # 6. render report/report.md from the artifacts
 uv run fraud-ae all       --config configs/base.toml --run runs/ae_base   # phases 1-4 (--synthetic for the toy set)
-scripts/run_ablations.sh                                                  # every AE variant + baselines + comparison (≈ 10 min)
+scripts/run_ablations.sh                                                  # every AE variant + baselines + comparison + report (≈ 10 min)
 ```
+
+**Reproduce the whole study from a clean checkout** (CPU, ≈ 10 min): `uv sync --group dev`,
+place `dataset.zip`, then `uv run fraud-ae all --config configs/base.toml --run runs/ae_base`
+followed by `scripts/run_ablations.sh`. The last step rewrites `results/comparison.md`,
+`report/figures/*` and `report/report.md`; `uv run pytest` then verifies that the committed
+report equals what the artifacts render to.
 
 `prepare` writes `data/processed/{splits.npz, scaler.joblib, feature_names.json, data_report.json}`
 and the EDA figures to `report/figures/eda_*.png`; `--synthetic` writes to
@@ -51,20 +65,20 @@ model. Test labels are read for the first time by `evaluate`.
 
 ```
 configs/        TOML experiments (base + ablations: latent size, no time feature, score method, BatchNorm, temporal split)
-scripts/        run_ablations.sh – every ablation run, the baselines and the comparison through the CLI
-src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, plots, cli
+scripts/        run_ablations.sh (every run, baselines, comparison, report), check.sh (format + lint + tests)
+src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, plots, report, cli
 tests/          pytest suite on the synthetic creditcard-like frame from fraud_ae.synthetic
 data/           raw/ (extracted CSV) and processed/ (splits, scaler, data_report.json) – git-ignored
 runs/           one directory per experiment – git-ignored
 results/        comparison.md and ablations_phase4.md, generated from runs/*/metrics.json (tracked)
-report/         report.md (English), prompt_log.md, figures/
+report/         report.md (rendered), report_template.md (source of truth), CHANGELOG.md, prompt_log.md, figures/
 ```
 
 ## Status
 
-Phases 0 (scaffold), 1 (data), 2 (training), 3 (threshold), 4 (evaluation, milestone M2) and
-5 (baselines and ablations) done; Phase 6 (report) is tracked in `ROADMAP.md` and every change
-in `report/CHANGELOG.md`.
+All six phases are done (milestone M3, submission package, version 1.0.0). The sections below
+are the per-phase working notes; the report in `report/report.md` is the deliverable. Phase
+outcomes are in `ROADMAP.md`, every change in `report/CHANGELOG.md`.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -197,3 +211,20 @@ The val-legit threshold transfers to a *lower* FPR on later traffic (0.53 % inst
 so the AE loses 7 pp of recall to threshold drift (73.0 % at the threshold vs 79.7 % at the
 oracle 1 % FPR); the ranking itself is as good as on the random split. Intervals are wide with
 74 frauds. The AE stays ahead of every baseline under both protocols.
+
+### Phase 6 – hardening and report (`fraud-ae report`, `scripts/check.sh`)
+
+* `report/report.md` is **rendered** from `report/report_template.md`: every number is a
+  placeholder such as `{{ ${runs/ae_base:at_threshold.recall} | pct1 }}` resolved from
+  `metrics.json`, `threshold.json`, `train_summary.json` or `data_report.json`
+  (`src/fraud_ae/report.py`; simple arithmetic and `mean/std/min/max` across runs are allowed,
+  e.g. the seed-variance table). Edit the template, not the report.
+* `tests/test_report.py` checks the placeholder engine, that the template only references
+  artifact locations, and – when the real runs are present – that the committed `report.md`
+  is byte-identical to what the artifacts render to. `scripts/check.sh` runs format check,
+  lint and the full suite (109 tests).
+* The report follows the outline in `ROADMAP.md`: problem and threat model with the precision
+  consequence of the criterion, data and leakage controls, model, threshold, evaluation
+  protocol, results (primary verdict, ranking analysis, ablations, seed variance, baselines,
+  temporal split, per-feature residuals), discussion, limitations, conclusions,
+  reproducibility and references.
