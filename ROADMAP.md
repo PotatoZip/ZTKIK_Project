@@ -11,7 +11,7 @@ compared against PCA-reconstruction and Isolation Forest baselines.
 | 0 | **Scaffold** ✅ | layout, `pyproject`/uv, configs, package skeleton, tests, docs | this repo | `uv sync`, `fraud-ae --help`, `pytest`, `ruff` all green | 1 session |
 | 1 | **Data** (abstract phase 1) ✅ | unzip + sha256, dedupe, `log1p(Amount)`, hour-of-day sin/cos, seeded split (train = legit only), scaler fit on train, EDA | `data.py`, `synthetic.py`, `prepare [--synthetic]`, `data_report.json`, EDA figures (class ratio, Amount distribution, fraud rate by hour) | split invariants tested (`tests/test_data.py`, 19 tests pass); split-size table in README; sha256 pinned in configs | 1 session |
 | 2 | **Train** (abstract phase 2) ✅ | training loop, early stopping on val-legit MSE, checkpoints, seeding | `train.py`, `train [--synthetic] [--epochs]`, `runs/ae_base/{config.toml,model.pt,history.csv,train_summary.json}`, `report/figures/training_curves_ae_base.png` | val MSE converges (0.770 → 0.420); same seed → identical losses and byte-identical `model.pt` (tested) | 1 session |
-| 3 | **Threshold** (abstract phase 3) | scoring (`mse`, `standardized`, `mahalanobis`), threshold strategies | `scoring.py`, `threshold.py`, `threshold.json`, score histogram | val FPR ≈ 0.9 % with the quantile strategy; quantile property test passes | 0.5 session |
+| 3 | **Threshold** (abstract phase 3) ✅ | scoring (`mse`, `standardized`, `mahalanobis`), threshold strategies | `scoring.py`, `threshold.py`, `threshold [--method] [--strategy] [--target-fpr] [--synthetic]`, `runs/ae_base/{scores_val,scores_test,score_calibration}.npz`, `threshold.json`, `report/figures/score_histogram_val_ae_base.png` | val FPR = 0.900 % with the quantile strategy; quantile property tests pass (24 Phase 3 tests) | 0.5 session |
 | 4 | **Evaluate** (abstract phase 4) | ROC/PR-AUC, recall@FPR grid, confusion matrix, Wilson + bootstrap CIs, figures, criterion check | `evaluate.py`, `plots.py`, `metrics.json`, ROC/PR/recall-vs-FPR/threshold-sweep/per-feature figures | **Decision gate:** `meets_target` true → Phase 5; false → run scoring variants, latent sweep (`configs/ablation_latent_*`), `ablation_no_time`, 5 seeds, then re-evaluate | 1 session |
 | 5 | **Baselines & ablations** | PCA(k ∈ {5,10,15}), Isolation Forest; ablations: scoring method, latent size, Time feature, BatchNorm, 5 seeds, temporal split | `baselines.py`, `results/comparison.md`, box/bar plots | comparison table complete with CIs; seed variance reported | 1–1.5 sessions |
 | 6 | **Hardening & report** | tests green, README final, `report/report.md` (English), `report/prompt_log.md`, limitations + threat-model discussion | submission package | every number in the report traceable to a `metrics.json`; `fraud-ae all` + `baselines` reproduce it | 1 session |
@@ -41,6 +41,19 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
   more than 2× the median MSE of legit rows (tested), i.e. the premise holds on the toy set.
 * Determinism: unit test on the synthetic split plus two 3-epoch runs on the real data give
   identical train/val losses and byte-identical checkpoints (only the timing column differs).
+
+### Phase 3 outcome (2026-10-27)
+
+* `runs/ae_base`, `mse` + quantile (target 0.9 %): threshold 1.862, val FPR 0.900 %
+  (510 of 56 651 legit rows), val recall 84.3 % (199 of 236). Plain MSE therefore sits exactly in
+  the borderline band anticipated in the risk table.
+* Score variants at the same val FPR: `standardized` 84.7 %, `mahalanobis` 85.2 %
+  (recall@val-FPR 0.1 % jumps from 55.5 % to 69.5 % with Mahalanobis). Semi-supervised
+  strategies: Youden 2.1–2.5 % FPR / 87 % recall, max-F1 ≈ 0.2 % FPR / 74–77 % recall.
+* These are validation numbers; the Phase 4 decision gate is taken on the untouched test set.
+  Expected: plain MSE narrowly misses 85 %, Mahalanobis is the first candidate to try.
+* Synthetic smoke run: val FPR 1.0 % (granularity 1/400), val recall 100 %; all three methods
+  reach ≥ 50 % recall at 5 % FPR in the tests.
 
 ## Risks
 

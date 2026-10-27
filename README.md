@@ -26,7 +26,8 @@ uv run fraud-ae prepare   --config configs/base.toml                      # 1. p
 uv run fraud-ae prepare   --config configs/base.toml --synthetic          #    same pipeline on a 2 k-row generated set
 uv run fraud-ae train     --config configs/base.toml --run runs/ae_base   # 2. train AE on legit rows (~30 s CPU)
 uv run fraud-ae train     --config configs/base.toml --run runs/ae_synthetic --synthetic --epochs 5   # smoke run
-uv run fraud-ae threshold --run runs/ae_base                              # 3. MSE threshold (val-legit quantile)
+uv run fraud-ae threshold --run runs/ae_base                              # 3. score val/test, threshold = val-legit quantile
+uv run fraud-ae threshold --run runs/ae_base --method mahalanobis --strategy youden   # variants (val only)
 uv run fraud-ae evaluate  --run runs/ae_base                              # 4. recall / FPR on test, figures
 uv run fraud-ae baselines --config configs/base.toml                      # PCA + Isolation Forest
 uv run fraud-ae all       --config configs/base.toml --run runs/ae_base   # phases 1-4
@@ -37,8 +38,10 @@ and the EDA figures to `report/figures/eda_*.png`; `--synthetic` writes to
 `data/processed_synthetic/` instead so the real artifacts are never overwritten.
 
 Each run directory contains `config.toml` (snapshot), `model.pt` (best checkpoint),
-`history.csv`, `train_summary.json`, `threshold.json`, `metrics.json` (includes `meets_target`)
-and `figures/`. `--synthetic` on `train` reads the splits written by `prepare --synthetic`.
+`history.csv`, `train_summary.json`, `score_calibration.npz`, `scores_{val,test}.npz`,
+`threshold.json`, `metrics.json` (includes `meets_target`) and `figures/`. `--synthetic` on
+`train` / `threshold` reads the splits written by `prepare --synthetic`. `threshold` reads the
+run's own `config.toml` snapshot, so scoring always matches the trained model.
 
 ## Layout
 
@@ -53,8 +56,8 @@ report/         report.md (English), prompt_log.md, figures/
 
 ## Status
 
-Phases 0 (scaffold), 1 (data) and 2 (training) done; phases 3–6 are tracked in `ROADMAP.md`
-and every change in `report/CHANGELOG.md`. CLI sub-commands for unimplemented phases exit with
+Phases 0 (scaffold), 1 (data), 2 (training) and 3 (threshold) done; phases 4–6 are tracked
+in `ROADMAP.md` and every change in `report/CHANGELOG.md`. CLI sub-commands for unimplemented phases exit with
 code 2 and a "not implemented" message.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
@@ -90,3 +93,21 @@ creeping down, so a longer schedule is a candidate for the Phase 4 ablations. Fi
 `report/figures/training_curves_ae_base.png`. Determinism: two runs with the same seed give
 identical losses in `history.csv` (only the wall-clock `seconds` column differs) and a
 byte-identical `model.pt` (unit-tested on the synthetic split and checked on the real data).
+
+### Phase 3 – scoring and threshold (`fraud-ae threshold --run runs/ae_base`)
+
+Scores are computed from the reconstruction residual `x − AE(x)`; the calibration statistics for
+the non-plain methods come from legitimate validation rows only. The primary threshold is the
+`1 − 0.009` quantile of the legitimate validation scores, so the FPR criterion holds by
+construction without reading any fraud label. **Validation numbers only** – the test set is
+scored and stored here but first evaluated in Phase 4.
+
+| Score method | Threshold (quantile 0.9 %) | Val FPR | Val recall (236 frauds) |
+|---|---:|---:|---:|
+| `mse` (primary) | 1.862 | 0.900 % | 84.3 % |
+| `standardized` | 155.7 | 0.900 % | 84.7 % |
+| `mahalanobis` | 259.0 | 0.900 % | 85.2 % |
+
+The semi-supervised strategies (`youden`, `max_f1`) use val fraud labels and are reported for
+comparison only: Youden lands at 2.1–2.5 % FPR (87 % recall), max-F1 at ≈ 0.2 % FPR (74–77 %
+recall). Figure: `report/figures/score_histogram_val_ae_base.png`.

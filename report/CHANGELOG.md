@@ -6,8 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned: Phase 3 (scoring + threshold), Phase 4 (evaluation + criterion check), Phase 5
-(baselines + ablations), Phase 6 (hardening + report).
+Planned: Phase 4 (evaluation + criterion check, decision gate), Phase 5 (baselines + ablations),
+Phase 6 (hardening + report).
+
+## [0.3.0] – 2026-10-27 – Phase 3: scoring and threshold
+
+### Added
+- `fraud_ae.scoring`: `residuals`, `calibrate` (val-legit residual mean / std / population
+  covariance with ridge), `score` with `mse` / `standardized` / `mahalanobis`,
+  `score_calibration.npz` and `scores_{val,test}.npz` I/O.
+- `fraud_ae.threshold`: `quantile_threshold` (primary, val-legit only), `youden_threshold`,
+  `max_f1_threshold` (semi-supervised, comparison only), `choose_threshold` → `ThresholdResult`
+  (now also records score method and val class counts), `threshold.json` I/O.
+- `plots.score_histogram`: log-score densities per class with the threshold, legit FPR and recall.
+- CLI: `fraud-ae threshold --run <dir> [--method] [--strategy] [--target-fpr] [--synthetic]`;
+  reads the run's `config.toml` snapshot; `fraud-ae all` now runs phases 1–3.
+- Tests: `tests/test_scoring.py` (11) and `tests/test_threshold.py` (10, the Phase 3 xfail
+  flipped to pass), two CLI end-to-end tests; `synthetic_splits` fixture moved to `conftest.py`.
+- Real run `runs/ae_base`: `mse` + quantile → threshold 1.862, val FPR 0.900 %, val recall
+  84.3 %; `standardized` 84.7 %, `mahalanobis` 85.2 % at the same val FPR. Figure copied to
+  `report/figures/score_histogram_val_ae_base.png`. ADRs 13–14 in `ARCHITECTURE.md`.
+
+### Changed
+- CLI exits with code 1 (not a traceback) on missing run artifacts or invalid overrides.
+- Version 0.2.0 → 0.3.0.
 
 ## [0.2.0] – 2026-10-26 – Phase 2: training
 

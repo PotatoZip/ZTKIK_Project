@@ -9,7 +9,6 @@ import torch
 
 from fraud_ae import train as tr
 from fraud_ae.config import Config, DataConfig, ModelConfig, TrainConfig
-from fraud_ae.data import prepare
 
 
 def _cfg(**train_kwargs) -> Config:
@@ -19,23 +18,6 @@ def _cfg(**train_kwargs) -> Config:
         model=ModelConfig(),
         train=dataclasses.replace(base, **train_kwargs),
     )
-
-
-@pytest.fixture(scope="module")
-def synthetic_splits(tmp_path_factory, synthetic_module_df):
-    root = tmp_path_factory.mktemp("proj")
-    raw = root / "data" / "raw" / "creditcard.csv"
-    raw.parent.mkdir(parents=True)
-    synthetic_module_df.to_csv(raw, index=False)
-    splits, _ = prepare(DataConfig(zip_path=""), root)
-    return splits
-
-
-@pytest.fixture(scope="module")
-def synthetic_module_df():
-    from fraud_ae.synthetic import make_synthetic_frame
-
-    return make_synthetic_frame(n_legit=2000, n_fraud=40, n_duplicates=10, seed=0)
 
 
 # ----------------------------------------------------------------------------- early stopping

@@ -55,8 +55,8 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `synthetic.py` | 2 k-row creditcard-like frame for tests and `prepare --synthetic` (ADR 9) | `make_synthetic_frame(n_legit, n_fraud, n_duplicates, seed)` |
 | `model.py` | symmetric MLP autoencoder | `Autoencoder`, `build_model(input_dim, cfg)` |
 | `train.py` | seeding, manual seeded mini-batching, early stopping on val-legit MSE, best checkpoint, `ReduceLROnPlateau` | `train(cfg, X_train, X_val_legit, run_dir) -> Autoencoder`, `load_model(run_dir)`, `mse_per_sample(model, X)` |
-| `scoring.py` | residual-based anomaly scores | `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis` |
-| `threshold.py` | threshold strategies | `choose_threshold(scores_val, y_val, cfg) -> ThresholdResult` |
+| `scoring.py` | residual-based anomaly scores + score/calibration I/O | `residuals`, `calibrate(model, X_val_legit)`, `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis`, `save_scores` / `load_scores` |
+| `threshold.py` | threshold strategies, alarm rule `score > threshold` | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `save_threshold` / `load_threshold` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg) -> dict` |
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits | `run_baselines(cfg, splits, runs_root)` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
@@ -82,13 +82,23 @@ a second on CPU, so sweeps are cheap.
 
 ### Scoring
 * `mse` – per-sample mean squared residual (abstract's method, primary).
-* `standardized` – residuals scaled by per-feature residual std (val-legit), squared, summed.
-* `mahalanobis` – residual vector vs covariance of val-legit residuals.
+* `standardized` – residuals centred and scaled by the per-feature residual mean/std of
+  val-legit, squared, summed (≈ χ² with `d` degrees of freedom on legit rows).
+* `mahalanobis` – squared Mahalanobis distance of the residual vector w.r.t. the mean and
+  (population, ridge 1e-6) covariance of val-legit residuals; equals `standardized` when the
+  residual covariance is diagonal (tested).
+* Calibration statistics are computed on `X_val[y_val == 0]` only and stored in
+  `score_calibration.npz`; `scores_{val,test}.npz` hold `scores` + `y` for Phase 4.
 
 ### Threshold
 * `quantile` (primary) – `(1 − target_fpr)` quantile of **val-legit** scores, `target_fpr = 0.009`
-  to leave margin so the test FPR lands below 1 %.
-* `youden`, `max_f1` – semi-supervised (use val frauds); reported for comparison only.
+  to leave margin so the test FPR lands below 1 %. Observed on `runs/ae_base`: val FPR 0.900 %.
+* `youden`, `max_f1` – semi-supervised (use val frauds); reported for comparison only. sklearn's
+  curve thresholds mean `score >= t`; they are mapped to the project-wide rule `score > t` by
+  stepping to the largest score strictly below `t`.
+* `threshold.json` records strategy, target, value, val FPR / recall, score method and the val
+  class counts. The `threshold` command reads the run's `config.toml` snapshot (not the global
+  config) and lets `--method / --strategy / --target-fpr` override single fields.
 
 ### Evaluation
 Threshold-free: ROC-AUC, average precision, recall at FPR ∈ {0.1, 0.5, 1, 2} %.
@@ -98,7 +108,8 @@ for recall@1 % FPR, `meets_target`.
 ### Run-directory contract
 ```
 runs/<name>/ config.toml  model.pt  history.csv  train_summary.json
-             scores_val.npz  scores_test.npz  threshold.json  metrics.json  figures/*.png
+             score_calibration.npz  scores_val.npz  scores_test.npz  threshold.json
+             metrics.json  figures/*.png
 ```
 Baselines write the same files (minus `model.pt`/`history.csv`) so one comparison routine works
 for everything.
@@ -118,7 +129,9 @@ for everything.
 | 9 | Tests and `prepare --synthetic` share one generated 2 k-row frame (`synthetic.py`) | suite needs no 150 MB download and runs in seconds; the CLI path can be exercised end-to-end on any machine; synthetic outputs go to `data/processed_synthetic/` so real artifacts are never overwritten |
 | 10 | Dataset sha256 pinned in every config, checked by `prepare` | a different CSV (re-download, partial extract) fails loudly instead of silently changing the numbers |
 | 11 | Manual seeded mini-batching (`torch.randperm` + `Generator`) instead of `DataLoader` | tensors fit in memory; no worker processes, no shuffling non-determinism, one fewer moving part for the "same seed → same losses" exit criterion |
-| 12 | `--synthetic` flag on `prepare` and `train` | every phase can be smoke-tested end-to-end in seconds on the 2 k-row generated set before touching the real data |
+| 12 | `--synthetic` flag on `prepare`, `train` and `threshold` | every phase can be smoke-tested end-to-end in seconds on the 2 k-row generated set before touching the real data |
+| 13 | `threshold` reads the run's `config.toml` snapshot, not `configs/*.toml` | scoring and threshold always refer to the model that was actually trained; variants are explicit CLI overrides recorded in `threshold.json` |
+| 14 | Test scores are written in Phase 3 but test labels are first read in Phase 4 | one scoring pass per run; the "test set touched once" leakage control still holds because no metric is computed here |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.
