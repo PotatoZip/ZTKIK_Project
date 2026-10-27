@@ -6,7 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing planned – submission package complete.
+Planned (Roadmap v2 in `ROADMAP.md`, decided 2026-10-27): Phase 7 pooled-fraud protocol +
+repeated splits + `fraud-ae diagnose`; Phase 8 unsupervised ceiling (VAE, latent density,
+hour-segmented thresholds); Phase 9 fully supervised classifiers (logistic regression,
+gradient boosting, MLP), weakly-supervised AE and hybrid stacking with 5-fold CV over frauds
+and a few-label curve; Phase 10 rolling threshold, variance, evasion probe; Phase 11 report v2.
 
 ## [1.0.0] – 2026-10-27 – Phase 6: hardening and report (milestone M3)
 

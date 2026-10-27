@@ -78,7 +78,10 @@ report/         report.md (rendered), report_template.md (source of truth), CHAN
 
 All six phases are done (milestone M3, submission package, version 1.0.0). The sections below
 are the per-phase working notes; the report in `report/report.md` is the deliverable. Phase
-outcomes are in `ROADMAP.md`, every change in `report/CHANGELOG.md`.
+outcomes are in `ROADMAP.md`, every change in `report/CHANGELOG.md`. **Roadmap v2** (Phases
+7–11: pooled-fraud protocol, unsupervised ceiling, fully supervised classifiers alongside a
+weakly-supervised AE and hybrid, robustness, report v2) – the plan for reaching the 85 % / 1 %
+criterion – is in `ROADMAP.md`.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
