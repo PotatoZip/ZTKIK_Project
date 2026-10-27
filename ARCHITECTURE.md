@@ -33,7 +33,8 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
     + report/figures/eda_{class_ratio,amount_distribution,fraud_rate_by_hour}.png
   → train.py  → runs/<name>/{config.toml, model.pt, history.csv}
   → scoring.py + threshold.py → scores_{val,test}.npz, threshold.json
-  → evaluate.py + plots.py    → metrics.json (meets_target), figures/*.png
+  → evaluate.py + plots.py    → metrics.json (meets_target), figures/*_test.png
+  → scripts/run_ablations.sh  → runs/ae_<variant>/… (decision gate), results/ablations_phase4.md
   → baselines.py              → runs/baseline_*/…, results/comparison.md
 ```
 
@@ -57,10 +58,11 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `train.py` | seeding, manual seeded mini-batching, early stopping on val-legit MSE, best checkpoint, `ReduceLROnPlateau` | `train(cfg, X_train, X_val_legit, run_dir) -> Autoencoder`, `load_model(run_dir)`, `mse_per_sample(model, X)` |
 | `scoring.py` | residual-based anomaly scores + score/calibration I/O | `residuals`, `calibrate(model, X_val_legit)`, `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis`, `save_scores` / `load_scores` |
 | `threshold.py` | threshold strategies, alarm rule `score > threshold` | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `save_threshold` / `load_threshold` |
-| `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg) -> dict` |
+| `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg, seed) -> dict`, `recall_at_fpr`, `threshold_for_fpr`, `wilson_interval`, `bootstrap_ci`, `per_feature_summary`, `save_metrics` / `load_metrics` |
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits | `run_baselines(cfg, splits, runs_root)` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
-| `cli.py` | `fraud-ae prepare [--synthetic]|train|threshold|evaluate|baselines|all` | `main(argv)`; paths resolve against the cwd |
+| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines|all`, all with `--synthetic` | `main(argv)`; paths resolve against the cwd |
+| `scripts/` | `run_ablations.sh` (decision-gate runs through the CLI), `summarize_runs.py` (Markdown table from `runs/*/metrics.json`) | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
@@ -100,17 +102,42 @@ a second on CPU, so sweeps are cheap.
   class counts. The `threshold` command reads the run's `config.toml` snapshot (not the global
   config) and lets `--method / --strategy / --target-fpr` override single fields.
 
-### Evaluation
-Threshold-free: ROC-AUC, average precision, recall at FPR ∈ {0.1, 0.5, 1, 2} %.
-At threshold: confusion matrix, precision, recall, FPR, F1, Wilson CIs, 1 000-sample bootstrap CI
-for recall@1 % FPR, `meets_target`.
+### Evaluation (Phase 4)
+* Test labels are read here for the first time (`scores_test.npz` written in Phase 3).
+* Threshold-free, i.e. ranking quality of the score: ROC-AUC, average precision (PR-AUC) and
+  recall at FPR ∈ `eval.fpr_grid` = {0.1, 0.5, 1, 2} %. For the grid the threshold is set on the
+  **test** legit scores so that exactly `floor(fpr · n_legit)` legit rows alarm
+  (`threshold_for_fpr`); this is an oracle operating point and is reported as such.
+* At the Phase 3 threshold (chosen on val-legit, never adjusted here): confusion matrix,
+  precision, recall, FPR, F1; Wilson 95 % intervals for recall, FPR and precision; a stratified
+  bootstrap (`eval.bootstrap_samples` = 1 000 resamples of legit and fraud rows separately,
+  seeded) giving percentile CIs for recall and FPR at the threshold and for recall@`target_fpr`.
+* `meets_target` = recall ≥ `eval.target_recall` **and** FPR < `eval.target_fpr` on the point
+  estimates, exactly as the abstract states the criterion; `criterion` also records
+  `fp_allowed` and `tp_required` so the verdict is checkable by hand. The CIs qualify the verdict
+  but do not change it.
+* Explainability: `per_feature` = mean squared residual per input feature for legit vs fraud
+  rows and the five features with the largest fraud/legit ratio.
+* Figures (`figures/*_test.png`): ROC (log FPR axis) + PR, recall-vs-FPR with the criterion
+  region and the val-chosen operating point, threshold sweep (recall / FPR / precision),
+  test-score histogram, per-feature residuals.
+* Decision gate: when `meets_target` is false, `scripts/run_ablations.sh` produces one run
+  directory per variant (score method, latent size, no time feature, 200 epochs, five seeds)
+  through the same three CLI commands, and `scripts/summarize_runs.py` tabulates them. Score
+  variants are retrained from their own config rather than re-scoring `runs/ae_base`: training
+  is deterministic, so the checkpoint is byte-identical and each run stays self-contained.
 
 ### Run-directory contract
 ```
 runs/<name>/ config.toml  model.pt  history.csv  train_summary.json
              score_calibration.npz  scores_val.npz  scores_test.npz  threshold.json
-             metrics.json  figures/*.png
+             metrics.json
+             figures/{training_curves, score_histogram_val, roc_pr_test, recall_vs_fpr_test,
+                      threshold_sweep_test, score_histogram_test, per_feature_residuals_test}.png
 ```
+`config.toml` is a verbatim copy of the config the run was started from; when a CLI override
+(`--epochs`, `--seed`) changed it, the file is instead the *effective* config with a header
+naming the source file, so a run directory never claims settings it did not use.
 Baselines write the same files (minus `model.pt`/`history.csv`) so one comparison routine works
 for everything.
 
@@ -132,6 +159,10 @@ for everything.
 | 12 | `--synthetic` flag on `prepare`, `train` and `threshold` | every phase can be smoke-tested end-to-end in seconds on the 2 k-row generated set before touching the real data |
 | 13 | `threshold` reads the run's `config.toml` snapshot, not `configs/*.toml` | scoring and threshold always refer to the model that was actually trained; variants are explicit CLI overrides recorded in `threshold.json` |
 | 14 | Test scores are written in Phase 3 but test labels are first read in Phase 4 | one scoring pass per run; the "test set touched once" leakage control still holds because no metric is computed here |
+| 15 | The criterion verdict uses the val-chosen threshold; the recall@FPR grid uses oracle thresholds on test legit | the verdict must reflect what a deployment would do (threshold fixed before seeing test data); the grid separates ranking quality from threshold-transfer error |
+| 16 | Wilson intervals for every proportion plus a stratified bootstrap | 237 test frauds make a ±5 pp interval unavoidable; Wilson is closed-form and exact enough, the bootstrap also covers the re-derived threshold in recall@FPR |
+| 17 | `config.toml` snapshot = effective config when CLI overrides are used | `--seed` / `--epochs` runs would otherwise carry a snapshot that contradicts `train_summary.json` |
+| 18 | One run directory per experiment; ablations are configs + `scripts/run_ablations.sh`, not flags that mutate `runs/ae_base` | every table row maps to one `metrics.json` produced by the same three commands; nothing in the base run is overwritten by a variant |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.

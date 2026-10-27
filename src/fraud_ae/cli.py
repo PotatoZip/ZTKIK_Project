@@ -59,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"train on <processed_dir>{SYNTHETIC_SUFFIX} written by `prepare --synthetic`",
     )
     p.add_argument("--epochs", type=int, help="override train.epochs (smoke tests)")
+    p.add_argument("--seed", type=int, help="override train.seed (seed-variance ablation)")
 
     p = sub.add_parser("threshold", help="Phase 3: score val/test and choose the threshold")
     _add_run(p)
@@ -73,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("evaluate", help="Phase 4: metrics and figures on the test set")
     _add_run(p)
+    p.add_argument(
+        "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
+    )
 
     p = sub.add_parser("baselines", help="Phase 5: PCA and Isolation Forest baselines")
     _add_config(p)
@@ -80,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("all", help="Phases 1-4 in sequence")
     _add_config(p)
     _add_run(p)
+    p.add_argument("--synthetic", action="store_true", help="run all phases on the synthetic set")
     return parser
 
 
@@ -121,13 +126,25 @@ def _processed_dir(cfg: Config, synthetic: bool) -> Path:
     return project_root() / (d.rstrip("/") + SYNTHETIC_SUFFIX if synthetic else d)
 
 
-def cmd_train(cfg: Config, run: Path, synthetic: bool = False, epochs: int | None = None) -> int:
+def cmd_train(
+    cfg: Config,
+    run: Path,
+    synthetic: bool = False,
+    epochs: int | None = None,
+    seed: int | None = None,
+) -> int:
     from .data import load_splits
     from .train import load_summary, train
 
-    if epochs is not None:
-        cfg = dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, epochs=epochs))
+    overrides = {k: v for k, v in (("epochs", epochs), ("seed", seed)) if v is not None}
+    if overrides:
+        cfg = dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, **overrides))
     splits = load_splits(_processed_dir(cfg, synthetic))
+    if splits.X_train.shape[1] != cfg.data.n_features:
+        raise DataError(
+            f"{_processed_dir(cfg, synthetic)} has {splits.X_train.shape[1]} features but the "
+            f"config expects {cfg.data.n_features} – run `fraud-ae prepare` with this config"
+        )
     train(cfg, splits.X_train, splits.X_val[splits.y_val == 0], run)
     s = load_summary(run)
     print(
@@ -204,8 +221,83 @@ def cmd_threshold(
     return 0
 
 
-def cmd_evaluate(run: Path) -> int:
-    raise NotImplementedError("Phase 4: wire scoring + evaluate.evaluate + plots")
+def cmd_evaluate(run: Path, synthetic: bool = False) -> int:
+    """Phase 4: read the test scores and the val-chosen threshold, compute ``metrics.json`` and
+    the figures. This is the first (and only) place where test labels are read."""
+    from .data import load_splits
+    from .evaluate import evaluate, per_feature_summary, save_metrics
+    from .plots import (
+        per_feature_residuals,
+        recall_vs_fpr,
+        roc_pr_curves,
+        score_histogram,
+        threshold_sweep,
+    )
+    from .scoring import load_scores, residuals
+    from .threshold import load_threshold
+    from .train import CONFIG_FILE, load_model
+
+    cfg = load_config(run / CONFIG_FILE)
+    th = load_threshold(run)
+    scores, y = load_scores(run, "test")
+    metrics = evaluate(scores, y, th.value, cfg.eval, seed=cfg.train.seed)
+    metrics["score_method"] = th.score_method
+    metrics["threshold_strategy"] = th.strategy
+
+    figs = run / "figures"
+    roc_pr_curves(scores, y, figs / "roc_pr_test.png")
+    recall_vs_fpr(
+        scores,
+        y,
+        (cfg.eval.target_fpr, cfg.eval.target_recall),
+        figs / "recall_vs_fpr_test.png",
+        threshold=th.value,
+    )
+    threshold_sweep(scores, y, th.value, figs / "threshold_sweep_test.png")
+    score_histogram(
+        scores,
+        y,
+        th.value,
+        figs / "score_histogram_test.png",
+        title=f"Test scores ({th.score_method}) – threshold chosen on validation",
+    )
+    splits = load_splits(_processed_dir(cfg, synthetic))
+    R = residuals(load_model(run), splits.X_test)
+    metrics["per_feature"] = per_feature_summary(R, splits.y_test, splits.feature_names)
+    per_feature_residuals(
+        R, splits.y_test, splits.feature_names, figs / "per_feature_residuals_test.png"
+    )
+    save_metrics(metrics, run)
+
+    at, c, b = metrics["at_threshold"], metrics["criterion"], metrics["bootstrap"]
+    print(
+        f"test set: {metrics['n_legit']:,} legit / {metrics['n_fraud']} fraud  "
+        f"score: {th.score_method}  threshold: {th.value:.6g} ({th.strategy})"
+    )
+    print(f"ROC-AUC: {metrics['roc_auc']:.4f}  PR-AUC: {metrics['pr_auc']:.4f}")
+    print(
+        "recall @ FPR:  "
+        + "  ".join(f"{g['fpr_target']:.1%} → {g['recall']:.1%}" for g in metrics["recall_at_fpr"])
+    )
+    print(
+        f"at threshold: TP {at['tp']}  FP {at['fp']}  TN {at['tn']:,}  FN {at['fn']}  "
+        f"recall {at['recall']:.1%} [{at['recall_ci_wilson'][0]:.1%}, "
+        f"{at['recall_ci_wilson'][1]:.1%}]  FPR {at['fpr']:.3%} "
+        f"[{at['fpr_ci_wilson'][0]:.3%}, {at['fpr_ci_wilson'][1]:.3%}]  "
+        f"precision {at['precision']:.1%}  F1 {at['f1']:.3f}"
+    )
+    br, bf = b["recall_at_threshold"], b["recall_at_target_fpr"]
+    print(
+        f"bootstrap ({b['samples']}): recall@threshold [{br['ci_lo']:.1%}, {br['ci_hi']:.1%}]  "
+        f"recall@FPR {c['target_fpr']:.0%} [{bf['ci_lo']:.1%}, {bf['ci_hi']:.1%}]"
+    )
+    verdict = "MET" if metrics["meets_target"] else "NOT met"
+    print(
+        f"criterion recall ≥ {c['target_recall']:.0%} and FPR < {c['target_fpr']:.0%}: {verdict}  "
+        f"(need TP ≥ {c['tp_required']}, FP ≤ {c['fp_allowed']})"
+    )
+    print(f"artifacts: {run}/metrics.json, {figs}/*_test.png")
+    return 0
 
 
 def cmd_baselines(cfg: Config) -> int:
@@ -223,23 +315,26 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "prepare":
             return cmd_prepare(load_config(args.config), args.synthetic, args.figures_dir)
         if args.command == "train":
-            return cmd_train(load_config(args.config), Path(args.run), args.synthetic, args.epochs)
+            return cmd_train(
+                load_config(args.config), Path(args.run), args.synthetic, args.epochs, args.seed
+            )
         if args.command == "threshold":
             return cmd_threshold(
                 Path(args.run), args.strategy, args.target_fpr, args.method, args.synthetic
             )
         if args.command == "evaluate":
-            return cmd_evaluate(Path(args.run))
+            return cmd_evaluate(Path(args.run), args.synthetic)
         if args.command == "baselines":
             return cmd_baselines(load_config(args.config))
         if args.command == "all":
             cfg = load_config(args.config)
             run = Path(args.run)
+            syn = args.synthetic
             for step in (
-                lambda: cmd_prepare(cfg),
-                lambda: cmd_train(cfg, run),
-                lambda: cmd_threshold(run),
-                lambda: cmd_evaluate(run),
+                lambda: cmd_prepare(cfg, syn),
+                lambda: cmd_train(cfg, run, syn),
+                lambda: cmd_threshold(run, synthetic=syn),
+                lambda: cmd_evaluate(run, syn),
             ):
                 rc = step()
                 if rc:
