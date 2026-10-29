@@ -267,3 +267,146 @@ def test_baselines_and_compare_synthetic_end_to_end(tmp_path, monkeypatch, proje
     md = (tmp_path / "results" / "c.md").read_text()
     assert md.count("| `baseline_") == 4
     assert (tmp_path / "figs" / "comparison_recall.png").exists()
+
+
+# --------------------------------------------------------------------------- Phase 7
+
+
+def _copy_configs(tmp_path, project_root, *names):
+    (tmp_path / "configs").mkdir()
+    for name in names:
+        shutil.copy(project_root / "configs" / name, tmp_path / "configs" / name)
+
+
+def test_help_lists_diagnose_and_data_seed(capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--help"])
+    assert "diagnose" in capsys.readouterr().out
+    for cmd in ("prepare", "train", "baselines", "all"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([cmd, "--help"])
+        assert "--data-seed" in capsys.readouterr().out
+
+
+def test_data_seed_is_recorded_and_followed_by_threshold_and_evaluate(
+    tmp_path, monkeypatch, project_root
+):
+    _copy_configs(tmp_path, project_root, "base.toml")
+    monkeypatch.chdir(tmp_path)
+    assert (
+        main(["prepare", "--config", "configs/base.toml", "--synthetic", "--data-seed", "1"]) == 0
+    )
+    processed = tmp_path / "data" / "processed_dseed1_synthetic"
+    assert (processed / "splits.npz").exists() and (processed / "figures").exists()
+    assert not (tmp_path / "data" / "processed_synthetic").exists()
+    assert not (tmp_path / "report").exists()  # EDA figures of a re-drawn split stay local
+    import json
+
+    assert json.loads((processed / "data_report.json").read_text())["config"]["seed"] == 1
+    # train without the flag must fail (base processed dir does not exist) …
+    assert main(["train", "--config", "configs/base.toml", "--run", "runs/t", "--synthetic"]) == 1
+    # … and with it the snapshot records the effective data config
+    rc = main(
+        [
+            "train",
+            "--config",
+            "configs/base.toml",
+            "--run",
+            "runs/t",
+            "--synthetic",
+            "--data-seed",
+            "1",
+            "--epochs",
+            "2",
+        ]
+    )
+    assert rc == 0
+    from fraud_ae.config import load_config
+
+    snap = load_config(tmp_path / "runs" / "t" / "config.toml")
+    assert snap.data.seed == 1 and snap.data.processed_dir == "data/processed_dseed1"
+    assert snap.train.seed == 42
+    # threshold / evaluate need no --data-seed: they read the snapshot
+    assert main(["threshold", "--run", "runs/t", "--synthetic"]) == 0
+    assert main(["evaluate", "--run", "runs/t", "--synthetic"]) == 0
+    assert (tmp_path / "runs" / "t" / "metrics.json").exists()
+
+
+def test_two_data_seeds_give_different_legit_splits_same_frauds(
+    tmp_path, monkeypatch, project_root
+):
+    _copy_configs(tmp_path, project_root, "v2_pooled.toml")
+    monkeypatch.chdir(tmp_path)
+    import numpy as np
+
+    from fraud_ae.data import load_splits
+
+    splits = {}
+    for s in (0, 1):
+        assert (
+            main(
+                [
+                    "prepare",
+                    "--config",
+                    "configs/v2_pooled.toml",
+                    "--synthetic",
+                    "--data-seed",
+                    str(s),
+                ]
+            )
+            == 0
+        )
+        splits[s] = load_splits(tmp_path / "data" / f"processed_pooled_dseed{s}_synthetic")
+    assert not np.array_equal(splits[0].idx_train, splits[1].idx_train)
+    for s in (0, 1):
+        assert splits[s].y_val.sum() == 0 and splits[s].y_test.sum() == 40
+    # the same 40 frauds are test frauds under both seeds (positions in the de-duplicated frame)
+    frauds = {s: set(splits[s].idx_test[splits[s].y_test == 1].tolist()) for s in (0, 1)}
+    assert frauds[0] == frauds[1]
+
+
+def test_pooled_protocol_end_to_end_synthetic(tmp_path, monkeypatch, project_root, capsys):
+    _copy_configs(tmp_path, project_root, "v2_pooled.toml")
+    monkeypatch.chdir(tmp_path)
+    assert (
+        main(["all", "--config", "configs/v2_pooled.toml", "--run", "runs/p", "--synthetic"]) == 0
+    )
+    out = capsys.readouterr().out
+    assert "| val | 400 | 0 |" in out and "val recall: n/a (0 frauds)" in out
+    assert "test set: 400 legit / 40 fraud" in out
+    import json
+
+    th = json.loads((tmp_path / "runs" / "p" / "threshold.json").read_text())
+    assert th["val_recall"] is None and th["n_val_fraud"] == 0
+    assert json.loads((tmp_path / "runs" / "p" / "metrics.json").read_text())["n_fraud"] == 40
+
+
+def test_baselines_suffix_and_data_seed_name_runs(tmp_path, monkeypatch, project_root, capsys):
+    _copy_configs(tmp_path, project_root, "v2_pooled.toml")
+    monkeypatch.chdir(tmp_path)
+    cfg = ["--config", "configs/v2_pooled.toml", "--synthetic"]
+    assert main(["prepare", *cfg, "--data-seed", "2"]) == 0
+    assert main(["baselines", *cfg, "--suffix", "_pooled", "--data-seed", "2"]) == 0
+    runs = tmp_path / "runs"
+    assert (runs / "baseline_pca_k5_pooled_dseed2_synthetic" / "metrics.json").exists()
+    assert (runs / "baseline_iforest_pooled_dseed2_synthetic" / "threshold.json").exists()
+    assert not (runs / "baseline_pca_k5_synthetic").exists()
+    capsys.readouterr()
+    rc = main(
+        [
+            "compare",
+            "--runs",
+            *[str(p) for p in sorted(runs.glob("baseline_*"))],
+            "--out",
+            "results/v2.md",
+            "--figures-dir",
+            "figs",
+            "--figure-prefix",
+            "v2_",
+        ]
+    )
+    assert rc == 0
+    md = (tmp_path / "results" / "v2.md").read_text()
+    assert "| Data seed | Test frauds |" in md and "| 42 | 2 | 40 |" in md and "| n/a |" in md
+    assert (tmp_path / "figs" / "v2_comparison_recall.png").exists()
+    assert not (tmp_path / "figs" / "comparison_recall.png").exists()

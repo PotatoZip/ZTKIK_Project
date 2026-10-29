@@ -2,9 +2,8 @@
 dataset.zip
 data/raw/*
 data/processed/*
-data/processed_synthetic/
-data/processed_no_time/
-data/processed_temporal/
+# every other processed dir: synthetic, no_time, temporal, pooled[_dseed<N>], literature
+data/processed_*/
 runs/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep

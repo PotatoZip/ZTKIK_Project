@@ -41,6 +41,15 @@ uv run fraud-ae compare   --out results/comparison.md --figures-dir report/figur
 uv run fraud-ae report                                                    # 6. render report/report.md from the artifacts
 uv run fraud-ae all       --config configs/base.toml --run runs/ae_base   # phases 1-4 (--synthetic for the toy set)
 scripts/run_ablations.sh                                                  # every AE variant + baselines + comparison + report (≈ 10 min)
+
+# Roadmap v2, Phase 7 – pooled-fraud protocol (all 473 frauds in test), repeated splits, diagnosis
+uv run fraud-ae all       --config configs/v2_pooled.toml --run runs/ae_pooled                 # same model, measured on 473 frauds
+uv run fraud-ae prepare   --config configs/v2_pooled.toml --data-seed 0                        # re-drawn legit split → data/processed_pooled_dseed0
+uv run fraud-ae train     --config configs/v2_pooled.toml --run runs/ae_pooled_dseed0 --data-seed 0   # threshold/evaluate follow the snapshot
+uv run fraud-ae baselines --config configs/v2_pooled.toml --suffix _pooled                     # → runs/baseline_*_pooled (v1 baselines untouched)
+uv run fraud-ae diagnose  --run runs/ae_pooled --against runs/baseline_pca_k15_pooled runs/baseline_iforest_pooled   # 7. missed-fraud profile + bounds
+uv run fraud-ae compare   --runs runs/ae_pooled runs/ae_pooled_dseed0 --out results/v2_protocol.md --figure-prefix v2_protocol_
+scripts/run_v2_protocol.sh                                                # all of the above: 6 splits, 6 AE runs, baselines, diagnosis, table (≈ 5 min)
 ```
 
 **Reproduce the whole study from a clean checkout** (CPU, ≈ 10 min): `uv sync --group dev`,
@@ -54,34 +63,41 @@ and the EDA figures to `report/figures/eda_*.png`; `--synthetic` writes to
 `data/processed_synthetic/` instead so the real artifacts are never overwritten.
 
 Each run directory contains `config.toml` (snapshot; the *effective* config if `--epochs` /
-`--seed` overrides were used), `model.pt` (best checkpoint), `history.csv`,
+`--seed` / `--data-seed` overrides were used), `model.pt` (best checkpoint), `history.csv`,
 `train_summary.json`, `score_calibration.npz`, `scores_{val,test}.npz`, `threshold.json`,
-`metrics.json` (includes `meets_target`) and `figures/`. `--synthetic` on `train` /
-`threshold` / `evaluate` reads the splits written by `prepare --synthetic`. `threshold` and
+`metrics.json` (includes `meets_target`), `figures/` and, after `fraud-ae diagnose`,
+`diagnostics.json` + `figures/missed_frauds.png`. `--synthetic` on `train` / `threshold` /
+`evaluate` / `diagnose` reads the splits written by `prepare --synthetic`. `threshold` and
 `evaluate` read the run's own `config.toml` snapshot, so scoring always matches the trained
-model. Test labels are read for the first time by `evaluate`.
+model and a `--data-seed` run needs the flag only on `prepare` / `train`. Test labels are read
+for the first time by `evaluate`.
 
 ## Layout
 
 ```
-configs/        TOML experiments (base + ablations: latent size, no time feature, score method, BatchNorm, temporal split)
-scripts/        run_ablations.sh (every run, baselines, comparison, report), check.sh (format + lint + tests)
-src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, plots, report, cli
+configs/        TOML experiments (base + ablations: latent size, no time feature, score method, BatchNorm, temporal split;
+                v2_pooled / v2_literature: Roadmap v2 measurement protocol)
+scripts/        run_ablations.sh (every v1 run, baselines, comparison, report), run_v2_protocol.sh (Phase 7), check.sh
+src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, diagnose, plots, report, cli
 tests/          pytest suite on the synthetic creditcard-like frame from fraud_ae.synthetic
 data/           raw/ (extracted CSV) and processed/ (splits, scaler, data_report.json) – git-ignored
 runs/           one directory per experiment – git-ignored
-results/        comparison.md and ablations_phase4.md, generated from runs/*/metrics.json (tracked)
+results/        comparison.md, ablations_phase4.md, v2_protocol.md – generated from runs/*/metrics.json (tracked)
 report/         report.md (rendered), report_template.md (source of truth), CHANGELOG.md, prompt_log.md, figures/
 ```
 
 ## Status
 
-All six phases are done (milestone M3, submission package, version 1.0.0). The sections below
-are the per-phase working notes; the report in `report/report.md` is the deliverable. Phase
-outcomes are in `ROADMAP.md`, every change in `report/CHANGELOG.md`. **Roadmap v2** (Phases
-7–11: pooled-fraud protocol, unsupervised ceiling, fully supervised classifiers alongside a
-weakly-supervised AE and hybrid, robustness, report v2) – the plan for reaching the 85 % / 1 %
-criterion – is in `ROADMAP.md`.
+v1 (Phases 0–6, milestone M3, submission package) is done; the report in `report/report.md`
+is that deliverable. **Roadmap v2** (Phases 7–11: pooled-fraud protocol, unsupervised ceiling,
+fully supervised classifiers alongside a weakly-supervised AE and hybrid, robustness, report
+v2) – the plan for reaching the 85 % / 1 % criterion – is in `ROADMAP.md`; **Phase 7 is done**
+(milestone M4, version 1.1.0): the same autoencoder measured on all 473 frauds reaches
+**80.8 %** [77.0 %, 84.1 %] at FPR 0.955 % (80.5 % ± 1.0 % over five legit splits), and the
+diagnosis confirms that the 91 missed frauds are indistinguishable from legitimate rows by
+reconstruction error – gate G7 sends the work to Phase 8. The sections below are the per-phase
+working notes; outcomes are in `ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1
+report is unchanged until Phase 11 (report v2).
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -231,3 +247,36 @@ oracle 1 % FPR); the ranking itself is as good as on the random split. Intervals
   protocol, results (primary verdict, ranking analysis, ablations, seed variance, baselines,
   temporal split, per-feature residuals), discussion, limitations, conclusions,
   reproducibility and references.
+
+### Phase 7 – pooled protocol, repeated splits and diagnosis (`fraud-ae diagnose`, milestone M4)
+
+* **Why a new protocol.** The v1 threshold is a quantile of *legitimate* validation scores, so
+  holding half of the frauds back in validation bought nothing and cost half the sample.
+  `configs/v2_pooled.toml` sets `fraud_val_fraction = 0`: validation is legit-only, every fraud
+  is a test fraud. With the same data seed the legit split and therefore the trained model are
+  identical to `runs/ae_base` (the checkpoints are byte-identical) – only the measurement
+  changes.
+* **Result on 473 frauds** (`runs/ae_pooled`): recall **80.8 %** [77.0 %, 84.1 %] at FPR
+  0.955 % (TP 382, FP 541; the criterion needs 403). The v1 val half (84.3 %) and test half
+  (77.2 %) were two draws of this one number. Five legit splits (`--data-seed 0–3` plus the
+  config seed) give 79.7–82.0 %, mean 80.5 % ± 1.0 %; one split lands at FPR 1.008 %, so the
+  0.9 % margin only just covers split variance. The literature protocol (no dedupe, 492 frauds
+  in test, `configs/v2_literature.toml`) gives 82.3 % [78.7 %, 85.4 %] at 0.865 % FPR. Pooled
+  baselines: PCA k = 15 73.2 %, k = 10 61.5 %, k = 5 60.5 %, Isolation Forest 57.5 %. Table:
+  `results/v2_protocol.md`, figures `report/figures/v2_protocol_*.png`.
+* **Diagnosis** (`runs/ae_pooled/diagnostics.json`, `report/figures/missed_frauds_ae_pooled.png`):
+  the 91 missed frauds score at the 84th percentile of legit scores (threshold: 99.1st), have
+  small amounts (median 4.49 vs 12.31 detected / 22.51 legit), are spread over the day, and sit
+  near zero on the features that make the other frauds obvious (V17, V14, V12, V10, V16:
+  missed means +1.6 / −1.9 / −0.6 / −0.5 / +0.6 vs −8.4 / −8.0 / −7.4 / −6.6 / −5.1 for detected
+  frauds). PCA k = 15 catches 2 of them, PCA k = 5 one, Isolation Forest 7; the union of all
+  four detectors reaches 82.5 % only at 1.77 % FPR and rank-average fusion 79.1 % at 1.00 %.
+* **Tooling.** `--data-seed N` on `prepare` / `train` / `baselines` / `all` (override recorded in
+  the run's effective config, so `threshold` / `evaluate` follow it), `baselines --suffix`,
+  `compare --figure-prefix` with "Data seed" and "Test frauds" columns and `_dseed<n>` families,
+  `fraud-ae diagnose --run R --against B…` (`src/fraud_ae/diagnose.py`), `scripts/run_v2_protocol.sh`.
+  The run directories (`runs/ae_pooled*`, `runs/ae_literature`, `runs/baseline_*_pooled`) and the
+  split directories (`data/processed_pooled*`, `data/processed_literature`) are git-ignored and
+  regenerated by the script in ≈ 5 min. 122 tests.
+* **Gate G7:** pooled `meets_target` is false and no unsupervised combination exceeds ≈ 82 % →
+  Phase 8 (unsupervised ceiling) is next, measured under the pooled protocol.

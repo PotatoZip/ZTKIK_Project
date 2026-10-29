@@ -17,6 +17,7 @@ from .data import DataError
 
 SYNTHETIC_CSV = "data/raw/synthetic.csv"
 SYNTHETIC_SUFFIX = "_synthetic"
+DATA_SEED_SUFFIX = "_dseed"
 
 
 def project_root() -> Path:
@@ -30,6 +31,15 @@ def _add_config(p: argparse.ArgumentParser) -> None:
 
 def _add_run(p: argparse.ArgumentParser, required: bool = True) -> None:
     p.add_argument("--run", required=required, help="run directory, e.g. runs/ae_base")
+
+
+def _add_data_seed(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--data-seed",
+        type=int,
+        help=f"override data.seed and use <processed_dir>{DATA_SEED_SUFFIX}<N> (repeated legit "
+        "splits, Roadmap v2); threshold/evaluate follow the run's config snapshot",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,11 +58,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"use a tiny generated dataset ({SYNTHETIC_CSV}, outputs under "
         f"<processed_dir>{SYNTHETIC_SUFFIX}) to check the pipeline without the real CSV",
     )
-    p.add_argument("--figures-dir", help="where EDA figures go (default: report/figures)")
+    p.add_argument(
+        "--figures-dir",
+        help="where EDA figures go (default: report/figures; <processed_dir>/figures with "
+        "--synthetic or --data-seed)",
+    )
+    _add_data_seed(p)
 
     p = sub.add_parser("train", help="Phase 2: train the autoencoder on legitimate rows")
     _add_config(p)
     _add_run(p)
+    _add_data_seed(p)
     p.add_argument(
         "--synthetic",
         action="store_true",
@@ -83,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
     )
+    p.add_argument(
+        "--suffix",
+        help="run-name suffix, runs/baseline_<name><suffix> (default: '_temporal' for a temporal "
+        "split, else none); use e.g. '_pooled' so a second protocol never overwrites runs",
+    )
+    _add_data_seed(p)
 
     p = sub.add_parser("compare", help="Phase 5: comparison table + figures from run directories")
     p.add_argument(
@@ -92,22 +114,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--out", default="results/comparison.md", help="Markdown output")
     p.add_argument("--figures-dir", default="report/figures", help="where the figures go")
+    p.add_argument(
+        "--figure-prefix", default="", help="prefix for the figure file names (e.g. v2_protocol_)"
+    )
 
     p = sub.add_parser("report", help="Phase 6: render report/report.md from the run artifacts")
     p.add_argument("--template", default="report/report_template.md")
     p.add_argument("--out", default="report/report.md")
 
+    p = sub.add_parser(
+        "diagnose", help="Phase 7: profile the missed test frauds of a run (+ ensemble bounds)"
+    )
+    _add_run(p)
+    p.add_argument(
+        "--against",
+        nargs="*",
+        default=[],
+        help="other run directories scored on the same test split (overlap, fusion bounds)",
+    )
+    p.add_argument("--fpr", type=float, help="oracle FPR for the bounds (default: eval.target_fpr)")
+    p.add_argument(
+        "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
+    )
+
     p = sub.add_parser("all", help="Phases 1-4 in sequence")
     _add_config(p)
     _add_run(p)
     p.add_argument("--synthetic", action="store_true", help="run all phases on the synthetic set")
+    _add_data_seed(p)
     return parser
 
 
-def cmd_prepare(cfg: Config, synthetic: bool = False, figures_dir: str | None = None) -> int:
+def _with_data_seed(cfg: Config, data_seed: int | None) -> Config:
+    """``--data-seed N``: a re-drawn legitimate split lives in ``<processed_dir>_dseed<N>``. The
+    override changes the config, so ``train`` snapshots the *effective* config (ADR 17) and
+    ``threshold`` / ``evaluate`` follow it without a flag (ADR 13)."""
+    if data_seed is None:
+        return cfg
+    d = cfg.data
+    d = dataclasses.replace(
+        d,
+        seed=data_seed,
+        processed_dir=d.processed_dir.rstrip("/") + f"{DATA_SEED_SUFFIX}{data_seed}",
+    )
+    return dataclasses.replace(cfg, data=d)
+
+
+def cmd_prepare(
+    cfg: Config,
+    synthetic: bool = False,
+    figures_dir: str | None = None,
+    data_seed: int | None = None,
+) -> int:
     from .data import prepare, split_table_markdown
 
     root = project_root()
+    cfg = _with_data_seed(cfg, data_seed)
     dcfg = cfg.data
     if synthetic:
         from .synthetic import write_synthetic_csv
@@ -120,6 +182,8 @@ def cmd_prepare(cfg: Config, synthetic: bool = False, figures_dir: str | None = 
             processed_dir=dcfg.processed_dir.rstrip("/") + SYNTHETIC_SUFFIX,
             expected_sha256="",
         )
+        figs = Path(figures_dir) if figures_dir else root / dcfg.processed_dir / "figures"
+    elif data_seed is not None:  # same frame, re-drawn split: keep report/figures/eda_* untouched
         figs = Path(figures_dir) if figures_dir else root / dcfg.processed_dir / "figures"
     else:
         figs = Path(figures_dir) if figures_dir else root / "report" / "figures"
@@ -148,10 +212,12 @@ def cmd_train(
     synthetic: bool = False,
     epochs: int | None = None,
     seed: int | None = None,
+    data_seed: int | None = None,
 ) -> int:
     from .data import load_splits
     from .train import load_summary, train
 
+    cfg = _with_data_seed(cfg, data_seed)
     overrides = {k: v for k, v in (("epochs", epochs), ("seed", seed)) if v is not None}
     if overrides:
         cfg = dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, **overrides))
@@ -316,15 +382,23 @@ def cmd_evaluate(run: Path, synthetic: bool = False) -> int:
     return 0
 
 
-def cmd_baselines(cfg: Config, synthetic: bool = False) -> int:
+def cmd_baselines(
+    cfg: Config,
+    synthetic: bool = False,
+    suffix: str | None = None,
+    data_seed: int | None = None,
+) -> int:
     """Phase 5: PCA(k) and Isolation Forest on the same splits, same threshold rule and
     evaluator as the AE; one run directory each under ``runs/``."""
     from .baselines import run_baselines
     from .data import load_splits
 
+    cfg = _with_data_seed(cfg, data_seed)
     splits = load_splits(_processed_dir(cfg, synthetic))
-    # run names carry the split so that the temporal baselines never overwrite the random ones
-    suffix = ("_temporal" if cfg.data.split == "temporal" else "") + (
+    # run names carry the protocol so that a second split never overwrites the first one's runs
+    if suffix is None:
+        suffix = "_temporal" if cfg.data.split == "temporal" else ""
+    suffix += (f"{DATA_SEED_SUFFIX}{data_seed}" if data_seed is not None else "") + (
         SYNTHETIC_SUFFIX if synthetic else ""
     )
     results = run_baselines(cfg, splits, project_root() / "runs", suffix=suffix)
@@ -344,7 +418,9 @@ def cmd_baselines(cfg: Config, synthetic: bool = False) -> int:
     return 0
 
 
-def cmd_compare(runs: list[str] | None, out: str, figures_dir: str | None) -> int:
+def cmd_compare(
+    runs: list[str] | None, out: str, figures_dir: str | None, figure_prefix: str = ""
+) -> int:
     from .baselines import write_comparison
     from .evaluate import METRICS_FILE
 
@@ -357,7 +433,9 @@ def cmd_compare(runs: list[str] | None, out: str, figures_dir: str | None) -> in
             for d in (root / "runs").glob("*")
             if (d / METRICS_FILE).exists() and SYNTHETIC_SUFFIX not in d.name
         )
-    rows = write_comparison(dirs, Path(out), Path(figures_dir) if figures_dir else None)
+    rows = write_comparison(
+        dirs, Path(out), Path(figures_dir) if figures_dir else None, figure_prefix=figure_prefix
+    )
     print(f"{len(rows)} runs → {out}" + (f" (figures in {figures_dir})" if figures_dir else ""))
     for r in rows:
         lo, hi = r["recall_ci"]
@@ -379,14 +457,85 @@ def cmd_report(template: str, out: str) -> int:
     return 0
 
 
+def cmd_diagnose(
+    run: Path, against: list[str], fpr: float | None = None, synthetic: bool = False
+) -> int:
+    """Phase 7: profile the frauds ``run`` misses on the test split, compare the missed set with
+    other runs on the same split and write ``diagnostics.json`` + ``figures/missed_frauds.png``."""
+    from .diagnose import FIGURE_FILE, diagnose, save_diagnostics
+    from .plots import missed_frauds
+    from .train import CONFIG_FILE
+
+    cfg = load_config(run / CONFIG_FILE)
+    summary, arrays = diagnose(
+        run, [Path(a) for a in against], _processed_dir(cfg, synthetic), project_root(), fpr
+    )
+    save_diagnostics(summary, run)
+    missed_frauds(arrays, run / FIGURE_FILE)
+
+    g, tf = summary["groups"], summary["top_features"]
+    lo, hi = summary["recall_ci_wilson"]
+    print(
+        f"{summary['run']}: {summary['n_missed']} of {summary['n_fraud']} test frauds missed at "
+        f"threshold {summary['threshold']:.4g} (recall {summary['recall']:.1%} [{lo:.1%}, "
+        f"{hi:.1%}], FPR {summary['fpr']:.3%})"
+    )
+    for name in ("legit", "detected", "missed"):
+        r = g[name]
+        print(
+            f"  {name:<9} n={r['n']:<7,} score median {r['score_median']:.3g}  legit-percentile "
+            f"median {r['legit_percentile_median']:.1%}  amount median {r['amount_median']:.2f}  "
+            f"night share {r['night_share']:.1%}"
+        )
+    print(
+        "  top features (detected vs legit): "
+        + ", ".join(
+            f"{f} {m:+.2f}/{d:+.2f}/{lm:+.2f}"
+            for f, lm, d, m in zip(
+                tf["features"],
+                tf["legit_mean"],
+                tf["detected_mean"],
+                tf["missed_mean"],
+                strict=True,
+            )
+        )
+        + "  (missed / detected / legit mean)"
+    )
+    for o in summary["against"]:
+        print(
+            f"  vs {o['run']}: catches {o['caught_of_missed_own']} of the missed at its own "
+            f"threshold, {o['caught_of_missed_oracle']} at oracle FPR {summary['fpr_target']:.0%}"
+        )
+    if summary["fusion"]:
+        fu = summary["fusion"]
+        parts = [
+            f"{label} {fu[key]['recall']:.1%} at FPR {fu[key]['fpr']:.2%}"
+            for label, key in (
+                ("union@own", "union_own"),
+                ("union@oracle", "union_oracle"),
+                ("rank fusion", "rank_fusion"),
+            )
+        ]
+        print(f"  bounds over {len(fu['runs'])} runs: " + ", ".join(parts))
+    print(f"artifacts: {run}/diagnostics.json, {run / FIGURE_FILE}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "prepare":
-            return cmd_prepare(load_config(args.config), args.synthetic, args.figures_dir)
+            return cmd_prepare(
+                load_config(args.config), args.synthetic, args.figures_dir, args.data_seed
+            )
         if args.command == "train":
             return cmd_train(
-                load_config(args.config), Path(args.run), args.synthetic, args.epochs, args.seed
+                load_config(args.config),
+                Path(args.run),
+                args.synthetic,
+                args.epochs,
+                args.seed,
+                args.data_seed,
             )
         if args.command == "threshold":
             return cmd_threshold(
@@ -395,18 +544,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "evaluate":
             return cmd_evaluate(Path(args.run), args.synthetic)
         if args.command == "baselines":
-            return cmd_baselines(load_config(args.config), args.synthetic)
+            return cmd_baselines(
+                load_config(args.config), args.synthetic, args.suffix, args.data_seed
+            )
         if args.command == "compare":
-            return cmd_compare(args.runs, args.out, args.figures_dir)
+            return cmd_compare(args.runs, args.out, args.figures_dir, args.figure_prefix)
         if args.command == "report":
             return cmd_report(args.template, args.out)
+        if args.command == "diagnose":
+            return cmd_diagnose(Path(args.run), args.against, args.fpr, args.synthetic)
         if args.command == "all":
             cfg = load_config(args.config)
             run = Path(args.run)
-            syn = args.synthetic
+            syn, ds = args.synthetic, args.data_seed
             for step in (
-                lambda: cmd_prepare(cfg, syn),
-                lambda: cmd_train(cfg, run, syn),
+                lambda: cmd_prepare(cfg, syn, data_seed=ds),
+                lambda: cmd_train(cfg, run, syn, data_seed=ds),
                 lambda: cmd_threshold(run, synthetic=syn),
                 lambda: cmd_evaluate(run, syn),
             ):
