@@ -6,11 +6,55 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned (Roadmap v2 in `ROADMAP.md`, decided 2026-10-27): Phase 7 pooled-fraud protocol +
-repeated splits + `fraud-ae diagnose`; Phase 8 unsupervised ceiling (VAE, latent density,
-hour-segmented thresholds); Phase 9 fully supervised classifiers (logistic regression,
-gradient boosting, MLP), weakly-supervised AE and hybrid stacking with 5-fold CV over frauds
-and a few-label curve; Phase 10 rolling threshold, variance, evasion probe; Phase 11 report v2.
+Planned (Roadmap v2 in `ROADMAP.md`): Phase 8 unsupervised ceiling (VAE, latent density,
+hour-segmented thresholds, more training data) under the pooled protocol; Phase 9 fully
+supervised classifiers (logistic regression, gradient boosting, MLP), weakly-supervised AE and
+hybrid stacking with 5-fold CV over frauds and a few-label curve; Phase 10 rolling threshold,
+variance, evasion probe; Phase 11 report v2.
+
+## [1.1.0] – 2026-10-29 – Roadmap v2 Phase 7: measurement protocol and diagnosis (milestone M4)
+
+### Added
+- `configs/v2_pooled.toml` (pooled-fraud protocol: `fraud_val_fraction = 0`, all 473 frauds in
+  test, validation legit-only) and `configs/v2_literature.toml` (no dedupe, 492 frauds in test;
+  comparability row).
+- `--data-seed N` on `prepare` / `train` / `baselines` / `all`: overrides `data.seed`, uses
+  `<processed_dir>_dseed<N>`, is recorded in the run's effective `config.toml` so `threshold` /
+  `evaluate` follow it without a flag; EDA figures of a re-drawn split stay in the processed
+  directory.
+- `fraud-ae baselines --suffix` (explicit run-name suffix; default unchanged) and
+  `fraud-ae compare --figure-prefix`; comparison table gains "Data seed" and "Test frauds"
+  columns, `n/a` for runs without validation frauds, and `_dseed<n>` families in the
+  seed-variance table and figure.
+- `fraud_ae.diagnose` + `fraud-ae diagnose --run R [--against B…] [--fpr]`: missed/detected
+  masks, percentile among legit scores, per-group profile (score, amount, hour, night share),
+  most separating raw features with group means, Jaccard overlap of missed sets, "caught by
+  other detector" counts, ensemble upper bounds (union at own thresholds, union at oracle
+  thresholds, rank-average fusion); writes `diagnostics.json` and `figures/missed_frauds.png`
+  (new figure `plots.missed_frauds`, third colour for missed frauds).
+- `scripts/run_v2_protocol.sh` (6 splits, 6 AE runs, pooled baselines, diagnosis, table);
+  `results/v2_protocol.md` (11 runs); `report/figures/{v2_protocol_comparison_recall,
+  v2_protocol_seed_variance, missed_frauds_ae_pooled}.png`.
+- Tests: `tests/test_diagnose.py` (8), Phase 7 CLI tests (data seed recorded and followed,
+  pooled protocol end-to-end, baseline suffix + compare prefix, two data seeds → same frauds),
+  data-seed family / `None` val recall in the comparison; suite 109 → 122.
+
+### Changed
+- `scripts/run_ablations.sh` passes the explicit v1 run list to `compare`, so
+  `results/comparison.md` keeps its 21 v1 rows next to the v2 runs.
+- `.gitignore`: one rule `data/processed_*/` for every non-default processed directory.
+- Version 1.1.0; ARCHITECTURE: data flow, `diagnose.py` row, "Measurement protocol v2"
+  section, ADRs 24–27; ROADMAP: Phase 7 ✅ with outcome, M4 reached; README: Phase 7 section.
+
+### Results (real data, `runs/ae_pooled` = byte-identical checkpoint to `runs/ae_base`)
+- Pooled recall 80.8 % [77.0 %, 84.1 %] at FPR 0.955 % (382 of 473, needs 403): criterion
+  not met; five legit splits 80.5 % ± 1.0 % (79.7–82.0 %, FPR 0.87–1.01 %); literature protocol
+  82.3 % [78.7 %, 85.4 %] at 0.865 %; pooled baselines PCA k = 15 / 10 / 5 73.2 / 61.5 /
+  60.5 %, Isolation Forest 57.5 %.
+- Diagnosis: 91 missed frauds at the 84th legit-score percentile, small amounts, spread over
+  the day, ≈ 0 on V17 / V14 / V12 / V10 / V16 where detected frauds sit at −5 to −8; other
+  detectors catch 1–7 of them; union of four detectors 82.5 % at 1.77 % FPR, rank fusion
+  79.1 % at 1.00 %. Gate G7 → Phase 8.
 
 ## [1.0.0] – 2026-10-27 – Phase 6: hardening and report (milestone M3)
 

@@ -19,6 +19,7 @@ import pandas as pd  # noqa: E402
 # Two-class categorical palette, fixed order: legit = blue, fraud = orange.
 COLOR_LEGIT = "#2a78d6"
 COLOR_FRAUD = "#eb6834"
+COLOR_MISSED = "#8a5bc4"  # third class in the Phase 7 diagnosis: frauds below the threshold
 COLOR_TEXT = "#52514e"
 COLOR_GRID = "#e4e3df"
 
@@ -460,9 +461,13 @@ def seed_variance(families: dict[str, dict[str, list[float]]], out: Path) -> Pat
         (0.18, "test", COLOR_FRAUD, "test recall"),
     ):
         data = [families[n][key] for n in names]
+        keep = [i for i, d in enumerate(data) if len(d)]
+        if not keep:
+            continue
+        data = [data[i] for i in keep]
         ax.boxplot(
             data,
-            positions=pos + off,
+            positions=pos[keep] + off,
             widths=0.3,
             patch_artist=True,
             boxprops={"facecolor": color, "alpha": 0.25, "edgecolor": color},
@@ -471,14 +476,14 @@ def seed_variance(families: dict[str, dict[str, list[float]]], out: Path) -> Pat
             capprops={"color": color},
             showfliers=False,
         )
-        for p_, d in zip(pos + off, data, strict=True):
+        for p_, d in zip(pos[keep] + off, data, strict=True):
             ax.scatter(
                 np.full(len(d), p_),
                 d,
                 color=color,
                 s=18,
                 zorder=3,
-                label=label if p_ == pos[0] + off else None,
+                label=label if p_ == pos[keep[0]] + off else None,
             )
     ax.axhline(0.85, color=COLOR_TEXT, linestyle="--", lw=1)
     ax.set_xticks(pos)
@@ -486,4 +491,84 @@ def seed_variance(families: dict[str, dict[str, list[float]]], out: Path) -> Pat
     ax.set_ylabel("recall at the val-chosen threshold")
     ax.set_title("Seed variance – validation vs test recall")
     ax.legend(loc="lower right", fontsize=8)
+    return _save(fig, out)
+
+
+# --------------------------------------------------------------------------- Phase 7: diagnosis
+
+
+def missed_frauds(d, out: Path) -> Path:
+    """Four panels on the test split: score densities (legit / detected / missed frauds) with the
+    threshold, hour-of-day counts of detected vs missed frauds, amount distributions, and the
+    mean raw value of the most separating features per group. ``d`` is a
+    :class:`fraud_ae.diagnose.DiagnosisArrays`."""
+    legit = d.y == 0
+    groups = (
+        ("legit", legit, COLOR_LEGIT),
+        ("detected fraud", d.detected, COLOR_FRAUD),
+        ("missed fraud", d.missed, COLOR_MISSED),
+    )
+    fig, axes = plt.subplots(2, 2, figsize=(10, 6.8))
+    (ax_s, ax_h), (ax_a, ax_f) = axes
+
+    log_s = np.log10(np.maximum(d.scores, 1e-12))
+    bins = np.linspace(log_s.min(), log_s.max() + 1e-9, 60)
+    for label, m, color in groups:
+        if not m.any():
+            continue
+        kw = (
+            {"histtype": "stepfilled", "alpha": 0.35}
+            if label == "legit"
+            else {"histtype": "step", "linewidth": 2}
+        )
+        ax_s.hist(
+            log_s[m], bins=bins, density=True, color=color, label=f"{label} (n={m.sum():,})", **kw
+        )
+    ax_s.axvline(
+        np.log10(max(d.threshold, 1e-12)), color=COLOR_TEXT, ls="--", lw=1.2, label="threshold"
+    )
+    ax_s.set_xlabel("log10(anomaly score)")
+    ax_s.set_ylabel("density")
+    ax_s.set_title("Scores: missed frauds sit inside the legit distribution")
+    ax_s.legend(loc="upper right", fontsize=8)
+
+    x = np.arange(24)
+    for off, (label, m, color) in zip((-0.2, 0.2), groups[1:], strict=True):
+        counts = np.bincount(np.floor(d.hours[m]).astype(int) % 24, minlength=24)
+        ax_h.bar(x + off, counts, width=0.4, color=color, label=label)
+    ax_h.set_xticks(x[::2])
+    ax_h.set_xlabel("hour of day")
+    ax_h.set_ylabel("frauds")
+    ax_h.set_title("Hour of day")
+    ax_h.legend(loc="upper right", fontsize=8)
+
+    log_a = np.log10(1 + d.amount)
+    bins_a = np.linspace(0, log_a.max() + 1e-9, 40)
+    for label, m, color in groups:
+        if not m.any():
+            continue
+        kw = (
+            {"histtype": "stepfilled", "alpha": 0.35}
+            if label == "legit"
+            else {"histtype": "step", "linewidth": 2}
+        )
+        ax_a.hist(log_a[m], bins=bins_a, density=True, color=color, label=label, **kw)
+    ax_a.set_xlabel("log10(1 + Amount)")
+    ax_a.set_ylabel("density")
+    ax_a.set_title("Amount")
+    ax_a.legend(loc="upper right", fontsize=8)
+
+    tf = d.top_features
+    pos = np.arange(len(tf["features"]))
+    for off, key, (label, _, color) in zip(
+        (-0.27, 0.0, 0.27), ("legit_mean", "detected_mean", "missed_mean"), groups, strict=True
+    ):
+        ax_f.bar(pos + off, tf[key], width=0.26, color=color, label=label)
+    ax_f.axhline(0, color=COLOR_TEXT, lw=0.8)
+    ax_f.set_xticks(pos)
+    ax_f.set_xticklabels(tf["features"])
+    ax_f.set_ylabel("mean raw value")
+    ax_f.set_title("Most separating features (detected vs legit)")
+    ax_f.legend(loc="lower left", fontsize=8)
+    fig.tight_layout()
     return _save(fig, out)

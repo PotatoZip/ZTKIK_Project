@@ -36,7 +36,9 @@ done
 # Phase 5: baselines on the random split and on the temporal split, then the comparison
 uv run fraud-ae baselines --config configs/base.toml
 uv run fraud-ae baselines --config configs/ablation_temporal.toml
-uv run fraud-ae compare --out results/comparison.md --figures-dir report/figures
+for b in pca_k5 pca_k10 pca_k15 iforest; do NAMES+=("runs/baseline_$b" "runs/baseline_${b}_temporal"); done
+# explicit run list: the default glob would also pick up the Roadmap v2 runs (scripts/run_v2_protocol.sh)
+uv run fraud-ae compare --runs "${NAMES[@]}" --out results/comparison.md --figures-dir report/figures
 
 # Phase 6: copy the base-run figures the report embeds, then render the report from the artifacts
 for f in training_curves score_histogram_val roc_pr_test recall_vs_fpr_test threshold_sweep_test score_histogram_test per_feature_residuals_test; do

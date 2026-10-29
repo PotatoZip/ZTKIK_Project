@@ -124,3 +124,59 @@ def test_write_comparison_table_and_seed_families(synthetic_splits, tmp_path):
 def test_write_comparison_without_runs_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         bl.write_comparison([tmp_path / "nothing"], tmp_path / "c.md")
+
+
+def test_comparison_groups_data_seed_families_without_val_frauds(tmp_path):
+    """Pooled-protocol runs have no val frauds (val_recall None) and are grouped by `_dseed<n>`."""
+    import copy
+
+    base = {
+        "n_legit": 400,
+        "n_fraud": 40,
+        "threshold": 1.0,
+        "roc_auc": 0.99,
+        "pr_auc": 0.9,
+        "recall_at_fpr": [{"fpr_target": 0.01, "recall": 0.9, "recall_ci_wilson": [0.8, 0.95]}],
+        "at_threshold": {
+            "tp": 36,
+            "fp": 3,
+            "tn": 397,
+            "fn": 4,
+            "recall": 0.9,
+            "fpr": 0.0075,
+            "precision": 0.92,
+            "f1": 0.9,
+            "recall_ci_wilson": [0.8, 0.95],
+        },
+        "criterion": {"target_fpr": 0.01},
+        "meets_target": True,
+        "score_method": "mse",
+    }
+    th = {
+        "strategy": "quantile",
+        "target_fpr": 0.009,
+        "value": 1.0,
+        "val_fpr": 0.009,
+        "val_recall": None,
+        "score_method": "mse",
+        "n_val_legit": 400,
+        "n_val_fraud": 0,
+    }
+    runs = tmp_path / "runs"
+    for name, rec in (("ae_pooled", 0.9), ("ae_pooled_dseed0", 0.85), ("ae_pooled_dseed1", 0.95)):
+        d = runs / name
+        d.mkdir(parents=True)
+        m = copy.deepcopy(base)
+        m["at_threshold"]["recall"] = rec
+        (d / "metrics.json").write_text(json.dumps(m))
+        (d / "threshold.json").write_text(json.dumps(th))
+    rows = bl.comparison_rows(sorted(runs.iterdir()))
+    assert {r["family"] for r in rows} == {"ae_pooled"}
+    assert all(r["val_recall"] is None and r["data_seed"] == "?" for r in rows)
+    fams = bl.seed_families(rows, min_size=3)
+    assert fams["ae_pooled"]["val"] == [] and sorted(fams["ae_pooled"]["test"]) == [0.85, 0.9, 0.95]
+    md = bl.comparison_markdown(rows)
+    assert "| `ae_pooled` | 3 | n/a | 90.0% ± 5.0% |" in md
+    from fraud_ae.plots import seed_variance
+
+    assert seed_variance(fams, tmp_path / "sv.png").exists()

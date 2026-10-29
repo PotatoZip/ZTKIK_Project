@@ -41,6 +41,14 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
                                  report/figures/{comparison_recall,seed_variance}.png
   → report.py (fraud-ae report) → report/report.md rendered from report/report_template.md
   → scripts/run_ablations.sh  → all AE variants + baselines + comparison + report in one go
+
+  Roadmap v2 (Phase 7, measurement protocol):
+  configs/v2_pooled.toml (fraud_val_fraction = 0) → data/processed_pooled/ (val = legit only,
+                                                     test = 56 650 legit + all 473 frauds)
+  --data-seed N on prepare/train/baselines      → data/processed_pooled_dseedN/, runs/*_dseedN
+  configs/v2_literature.toml (no dedupe)        → data/processed_literature/, runs/ae_literature
+  → diagnose.py (fraud-ae diagnose) → runs/<run>/{diagnostics.json, figures/missed_frauds.png}
+  → scripts/run_v2_protocol.sh → results/v2_protocol.md, report/figures/v2_protocol_*.png
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
@@ -64,11 +72,12 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `scoring.py` | residual-based anomaly scores + score/calibration I/O | `residuals`, `calibrate(model, X_val_legit)`, `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis`, `save_scores` / `load_scores` |
 | `threshold.py` | threshold strategies, alarm rule `score > threshold` | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `save_threshold` / `load_threshold` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg, seed) -> dict`, `recall_at_fpr`, `threshold_for_fpr`, `wilson_interval`, `bootstrap_ci`, `per_feature_summary`, `save_metrics` / `load_metrics` |
-| `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir)` |
+| `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs (families `_seed<n>` / `_dseed<n>`) | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir, figure_prefix)` |
+| `diagnose.py` | Phase 7: profile of the frauds a run misses (score percentile, amount, hour, separating raw features), overlap with other runs' missed sets, ensemble upper bounds | `missed_masks`, `legit_percentile`, `group_profile`, `top_features`, `overlap_matrix`, `fusion_bounds`, `diagnose(run, against, processed_dir, root, fpr) -> (summary, arrays)`, `save_diagnostics` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
 | `report.py` | render `report/report.md` from `report/report_template.md`; placeholders resolve to JSON artifact values with arithmetic and `mean/std/min/max` | `render(template, root)`, `render_report(root, template, out)`, `references(template)` |
-| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines|all` (all with `--synthetic`) `compare [--runs] [--out] [--figures-dir]` and `report [--template] [--out]` | `main(argv)`; paths resolve against the cwd |
-| `scripts/` | `run_ablations.sh`: every AE variant, both baseline sets, the comparison and the report through the CLI; `check.sh`: format check + lint + tests | – |
+| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines [--suffix]|all` (all with `--synthetic`; `prepare`/`train`/`baselines`/`all` with `--data-seed`), `compare [--runs] [--out] [--figures-dir] [--figure-prefix]`, `report [--template] [--out]`, `diagnose --run [--against …] [--fpr]` | `main(argv)`; paths resolve against the cwd |
+| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `check.sh`: format check + lint + tests | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
@@ -162,16 +171,49 @@ committed so that readers need no artifacts. A placeholder `{{ expr | fmt }}` co
 Rendering fails as a whole and lists every unresolved placeholder. The committed report is
 compared against a fresh render in the test suite whenever the real runs are present.
 
+### Measurement protocol v2 (Phase 7)
+* **Pooled frauds.** `data.fraud_val_fraction = 0` puts every fraud into the test split;
+  validation holds legitimate rows only. Nothing else changes: the quantile threshold, the
+  calibration and the early stopping never read a fraud label, so the pooled protocol is
+  leakage-free by the same argument as v1 and measures recall on 473 instead of 237 frauds
+  (`ThresholdResult.val_recall = None`, shown as `n/a`). With the same `data.seed` the legit
+  split is identical to v1, so `runs/ae_pooled` re-trains to a byte-identical `runs/ae_base`
+  checkpoint – only the measurement differs. `youden` / `max_f1` are unavailable by design.
+* **Repeated legit splits.** `--data-seed N` overrides `data.seed` and appends `_dseed<N>` to
+  `data.processed_dir` (`prepare` writes there, `train` / `baselines` read there). The override
+  changes the config, so the run snapshot is the *effective* config (ADR 17), and `threshold` /
+  `evaluate` need no flag because they read the snapshot (ADR 13). The train seed is left
+  unchanged so that `_dseed` families isolate split variance from initialisation variance;
+  `compare` groups `_seed<n>` and `_dseed<n>` families alike.
+* **Literature row.** `configs/v2_literature.toml` keeps the 1 081 duplicates and puts all 492
+  frauds into test – the protocol most published numbers use. It is a comparability row only
+  (duplicates can sit in train and test), never a candidate.
+* **Diagnosis** (`fraud-ae diagnose --run R --against B…`). Missed = test frauds with
+  `score ≤ threshold`. Raw rows are recovered through `data_report.json["config"]`
+  (`raw_csv`, `drop_duplicates`) and `idx_test`, so amount and hour are exact for every split
+  variant. Per group (legit / detected / missed): score median, percentile among legit scores,
+  amount, night share, hour histogram; the five raw features with the largest
+  |mean(detected) − mean(legit)| / std(legit) with the three group means. For each `--against`
+  run on the same test split (checked through `y`): how many of R's missed frauds it alarms on
+  at its own threshold and at the oracle FPR; Jaccard matrix of the missed sets; ensemble upper
+  bounds – union at own thresholds (FPR adds up), union at per-run oracle thresholds, and
+  rank-average fusion at the oracle FPR. The bounds are oracle numbers (thresholds set on test
+  legit scores) and are read as ceilings, not as results.
+* **Protocol table.** `scripts/run_v2_protocol.sh` → `results/v2_protocol.md` through
+  `fraud-ae compare --figure-prefix v2_protocol_`; the table shows the number of test frauds
+  per run so that v1 (237), pooled (473) and literature (492) rows cannot be confused.
+
 ### Run-directory contract
 ```
 runs/<name>/ config.toml  model.pt  history.csv  train_summary.json
              score_calibration.npz  scores_val.npz  scores_test.npz  threshold.json
-             metrics.json
+             metrics.json  [diagnostics.json after fraud-ae diagnose]
              figures/{training_curves, score_histogram_val, roc_pr_test, recall_vs_fpr_test,
-                      threshold_sweep_test, score_histogram_test, per_feature_residuals_test}.png
+                      threshold_sweep_test, score_histogram_test, per_feature_residuals_test
+                      [, missed_frauds]}.png
 ```
 `config.toml` is a verbatim copy of the config the run was started from; when a CLI override
-(`--epochs`, `--seed`) changed it, the file is instead the *effective* config with a header
+(`--epochs`, `--seed`, `--data-seed`) changed it, the file is instead the *effective* config with a header
 naming the source file, so a run directory never claims settings it did not use.
 Baselines write the same files (minus `model.pt`/`history.csv`) so one comparison routine works
 for everything.
@@ -203,6 +245,10 @@ for everything.
 | 21 | Temporal split drops train-window frauds instead of moving them to val/test | moving them would evaluate on frauds older than the training data; dropping keeps "train on the past, test on the future" honest at the cost of fewer test frauds |
 | 22 | `fraud-ae compare` replaces the Phase 4 `summarize_runs.py` script | one Markdown writer for ablations, baselines and the Phase 6 report tables; figures and seed statistics come from the same rows |
 | 23 | The report is rendered from a template whose numbers are artifact references, and the rendered file is committed and tested against the artifacts | "every number traceable to a `metrics.json`" becomes a mechanical property instead of a reviewing effort; derived figures (differences, seed means) are computed at render time, never typed |
+| 24 | v2 measurement: all frauds in test (`fraud_val_fraction = 0`), repeated legit splits via `--data-seed` recorded in the run snapshot | the threshold never reads a fraud label, so holding frauds back in val only halves the sample; a data seed is an override like `--seed`, so `threshold` / `evaluate` follow the snapshot and no second code path exists |
+| 25 | Baseline run names take an explicit `--suffix` (default: the v1 rule) | the second protocol would otherwise overwrite `runs/baseline_*` silently – the same bug the temporal split hit in Phase 5 |
+| 26 | `diagnose` recovers raw rows through `data_report.json` + `idx_test`, not by inverting the scaler | exact amount and hour for every split variant (incl. `time_feature = "drop"` and the synthetic CSV); ≈ 5 s on the real CSV is cheaper than a second artifact |
+| 27 | Ensemble numbers in `diagnostics.json` are oracle upper bounds, not candidate results | union / rank fusion with thresholds set on test legit scores say what a combination *could* reach; a real ensemble would need its own val-legit threshold and a run directory |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.
@@ -213,3 +259,6 @@ for everything.
   implemented.
 * A random split is the literature-comparable protocol; a temporal split (train on earlier
   transactions) is run as an ablation because it better reflects concept drift in production.
+* v2: the pooled protocol evaluates each fraud once per method; the v1 val/test halves were two
+  draws of the same detector and their 7 pp gap is sampling variance, not a property of the
+  model. Pooled numbers are therefore reported next to the v1 numbers, never mixed with them.
