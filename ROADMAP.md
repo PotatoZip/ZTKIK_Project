@@ -126,6 +126,172 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
   criterion not met; AE best of the compared detectors (+7.2 pp over PCA k = 15, +21.1 pp over
   Isolation Forest at the same FPR).
 
+## Roadmap v2 – reaching the criterion (Phases 7–11)
+
+v1 stopped at 77.2 % test recall and showed that no cheap knob moves it. Before planning v2 a
+read-only diagnosis of the v1 artifacts was run (ad-hoc analysis of 2026-10-27 on the v1 test
+half; **reproduced on all 473 frauds by `fraud-ae diagnose` in Phase 7, see the Phase 7
+outcome below** – the numbers in this table are the v1-half originals):
+
+| Finding | Evidence (v1 artifacts, `runs/ae_base` test split) |
+|---|---|
+| The 54 missed frauds lie on the legitimate manifold | means of V14 / V17 / V12 / V10 ≈ −1.8 / +1.7 / −0.7 / −0.5 for missed frauds vs ≈ −8 for detected frauds and ≈ 0 for legit rows; missed-fraud score median 0.61 vs legit median 0.29 (threshold 1.86) |
+| No unsupervised detector catches them | at their own 1 % FPR: PCA k = 15 catches 1 of 54, Isolation Forest 5, Mahalanobis 2, latent 3 → 4, no-time → 4, another seed 2 |
+| Fusion and ensembles do not help | rank-average AE + PCA + IF 77.6 %, 5-seed MSE ensemble 76.4 %; the *union* of three detectors reaches 79.7 % only at 1.77 % FPR |
+| Missed frauds are daytime, small amounts | flat over hours (detected frauds cluster at 02–04 h and 11 h); median amount 4.79 vs 14.46 for detected |
+| Pooled estimate over all 473 frauds (legit-only threshold) | 80.8 % – the val half (84.3 %) and the test half (77.2 %) are two draws of the same detector |
+| Labels help, but the test half is hard | logistic regression / gradient boosting trained on train-legit + the 236 val frauds: 83.5 % / 82.3 % recall at 1 % FPR on the test half; with 100 labelled frauds 78.8 %, 50 → 75.9 %, 25 → 70.3 % |
+
+Consequences: (1) a strictly unsupervised point-anomaly detector on these features has a
+ceiling near 80 % at 1 % FPR, so the honest expectation for legit-only methods is "document the
+ceiling", not "reach 85 %"; (2) crossing 85 % needs labelled frauds *inside* the model,
+evaluated out-of-fold, plus the right measurement protocol (all frauds evaluated, repeated
+splits). Decisions taken with the project owner: labels may be used; the autoencoder stays the
+central model of the narrative, and **fully supervised classifiers are first-class candidates**
+(the dataset is labelled, so the question "what do labels buy over the legit-only detector" is
+answered head-on rather than with a reference ceiling); evaluation moves to pooled frauds with
+repeated legit splits – the threshold never uses a fraud label, so all 473 frauds can be test
+frauds (ADR 3, `fraud_val_fraction = 0`). Every method, unsupervised or supervised, is
+thresholded the same way (legit quantile of its own score) and judged by the same criterion.
+
+| # | Phase | Scope | Deliverables | Exit criteria / decision gate | Effort |
+|---|---|---|---|---|---|
+| 7 | **Diagnosis & measurement protocol** ✅ | pooled-fraud protocol (`fraud_val_fraction = 0`), repeated legit splits (`--data-seed`, 5 seeds), `fraud-ae diagnose` (missed-fraud profiles, overlap matrix, fusion upper bounds), literature-protocol replication (all frauds in test, no dedupe) | `configs/v2_{pooled,literature}.toml`, `--data-seed` on `prepare/train/baselines/all` (`<processed_dir>_dseed<N>`; `threshold`/`evaluate` follow the run snapshot), `baselines --suffix`, `compare --figure-prefix`, `diagnose.py` + `fraud-ae diagnose` → `diagnostics.json` + `figures/missed_frauds.png`, `scripts/run_v2_protocol.sh`, `results/v2_protocol.md` | **G7 taken:** pooled recall 80.8 % [77.0 %, 84.1 %] at FPR 0.955 % (382 of 473; needs 403); 5 data seeds 80.5 % ± 1.0 %; diagnosis confirms "missed frauds are on the manifold" (91 missed, legit-percentile median 83.7 %, V14/V17 ≈ −1.9/+1.6 vs −8.0/−8.4 for detected); `meets_target` false → Phase 8 | 1 session |
+| 8 | **Unsupervised ceiling** (legit-only training) | more training data (80/10/10), VAE reconstruction probability, latent-density score (GMM on codes), hour-segmented thresholds; negative results documented | `model.kind = "vae"`, `scoring` methods `recon_prob` / `latent_gmm`, `threshold.strategy = "quantile_by_hour"`, `configs/v2_unsup_*.toml`, `results/v2_unsupervised.md` | **G8:** ceiling table with CIs; selection on data seed 0, confirmation on seeds 1–4; pooled `meets_target` on the confirmation seeds → Phase 11, else (expected) → Phase 9 with the best unsupervised score as the AE component | 1 session |
+| 9 | **Supervised & weakly-supervised learning** | 5-fold CV over the 473 frauds; fully supervised classifiers (logistic regression, gradient boosting, small MLP; class weighting vs undersampling); negative-example AE (margin / deviation loss, Deep-SAD-style latent term); hybrid stacking `[x, residual, AE score]`; few-label curve (25 / 50 / 100 / all) for every method | `fraud_ae/supervised.py`, `fraud_ae/semi.py`, `folds.json`, `fraud-ae supervised` / `fraud-ae semi --config configs/v2_*.toml`, `results/v2_supervised.md`, few-label figure | **G9 (milestone M5):** pooled out-of-fold recall ≥ 85 % at FPR < 1 % with CI for at least one method; the table shows supervised, hybrid and AE-based rows side by side with their label budgets, so the report can state what labels buy; if no method reaches it, the ceiling and the few-label curve are the result | 1.5–2 sessions |
+| 10 | **Robustness & deployment realism** | rolling-origin temporal validation with rolling threshold re-estimation (fixes the Phase 5 drift), seed and data-seed variance of the winner, adversarial evasion probe (minimal perturbation to cross below the threshold) | `results/v2_robustness.md`, evasion figure | rolling threshold holds FPR within [0.8 %, 1.0 %] on every window; variance tables; median evasion budget reported | 0.5–1 session |
+| 11 | **Report v2** | sections 6.8–6.10, updated abstract and conclusions, every number via placeholders | `report/report_template.md` → `report/report.md`, CHANGELOG 2.0.0, README outcome line | **M6:** report rendered from artifacts, committed report ≡ fresh render (existing test) | 0.5 session |
+
+Milestones: **M4** pooled protocol and diagnosis (end of Phase 7, reached 2026-10-29) · **M5**
+criterion reached or ceiling proven (end of Phase 9) · **M6** report v2 (end of Phase 11).
+Total ≈ 4–5 sessions.
+
+### Phase 7 – methods
+
+* **Pooled-fraud protocol.** `data.fraud_val_fraction = 0.0`: validation holds legit rows only
+  (`ThresholdResult.val_recall = None`, `evaluate` already handles zero val frauds; the
+  semi-supervised strategies `youden` / `max_f1` are excluded by design). Threshold, calibration
+  and model selection stay legit-only; recall is measured once per method on all 473 frauds.
+* **Repeated legit splits.** `--data-seed N` on `prepare` / `train` / `baselines` writes and
+  reads `<processed_dir>_dseed<N>` (same suffix pattern as `--synthetic`, same feature-count
+  guard); the override is recorded in the run's effective config, so `threshold` / `evaluate`
+  follow it without a flag. Five data seeds × base config → pooled recall mean ± std across
+  seeds plus the Wilson interval on the pooled counts of each run.
+* **`fraud-ae diagnose --run <dir> [--against <dirs…>]`.** Reuses `scoring.load_scores`,
+  `evaluate.threshold_for_fpr` and `idx_test` from `data.load_splits` to map missed frauds back
+  to raw rows: score percentile among legit rows, amount, hour, deltas on the top residual
+  features; Jaccard overlap of the missed sets across runs; union and rank-fusion recall at a
+  given FPR as upper bounds for ensembles. Writes `diagnostics.json` and a figure.
+* **Literature-protocol replication.** One run with all frauds in test, no duplicate removal
+  and the same quantile threshold – a comparability row for the report, not a candidate.
+
+### Phase 7 outcome (2026-10-29, milestone M4)
+
+* **Pooled protocol** (`configs/v2_pooled.toml`, `runs/ae_pooled`): the legit split is the v1
+  split, so the checkpoint is byte-identical to `runs/ae_base` (verified with `cmp`); only the
+  measurement changes. On 56 650 legit + **all 473 frauds** at the v1 threshold 1.862: TP 382,
+  FP 541 → recall **80.8 %** [77.0 %, 84.1 %] (bootstrap [77.4 %, 84.4 %]), FPR 0.955 %,
+  precision 41.4 %, ROC-AUC 0.951, PR-AUC 0.660. Criterion needs TP ≥ 403 → **not met**; the
+  oracle recall at exactly 1 % FPR is the same 80.8 %. The v1 val half (84.3 %) and test half
+  (77.2 %) are confirmed as two draws of one 80.8 % detector.
+* **Repeated legit splits** (`--data-seed 0–3` + the config seed 42, train seed fixed at 42):
+  79.7 / 79.7 / 80.5 / 80.8 / 82.0 % → **80.5 % ± 1.0 %** (min–max 79.7–82.0 %); FPR
+  0.87–1.01 % – data seed 2 lands at 1.008 % with the 0.9 % val quantile, i.e. the threshold
+  margin covers split variance only marginally (input for the Phase 10 rolling-threshold work).
+  No data seed reaches 403 TP; the best single split is 388.
+* **Literature protocol** (`configs/v2_literature.toml`: no dedupe, 284 807 rows, 492 frauds
+  all in test, 170 589 train legit): recall 82.3 % [78.7 %, 85.4 %] at FPR 0.865 %. About
+  1.5 pp of the published-looking gain comes from duplicated frauds and from a lower FPR; it is
+  a comparability row, not a candidate.
+* **Pooled baselines** (`--suffix _pooled`): PCA k = 15 73.2 %, k = 10 61.5 %, k = 5 60.5 %,
+  Isolation Forest 57.5 % – the ranking and the ≈ 8 pp AE lead over the best baseline hold on
+  473 frauds with intervals half as wide as v1.
+* **Diagnosis** (`fraud-ae diagnose --run runs/ae_pooled --against` the three pooled baselines,
+  `runs/ae_pooled/diagnostics.json`, `report/figures/missed_frauds_ae_pooled.png`): 91 missed
+  frauds. Their score median is 0.617 (legit 0.292, detected 11.4) – the 83.7th percentile of
+  legit scores while the threshold sits at the 99.1st; median amount 4.49 (detected 12.31,
+  legit 22.51); night share (00–06 h) 13 % vs 27 % for detected and 8 % for legit, i.e. the
+  missed frauds are spread over the day. The five most separating raw features (V17, V14, V12,
+  V10, V16; effect sizes 6–11 σ) have detected-fraud means of −8.4 / −8.0 / −7.4 / −6.6 / −5.1
+  but missed-fraud means of +1.6 / −1.9 / −0.6 / −0.5 / +0.6 against ≈ 0 for legit rows: **the
+  missed frauds lie on the legitimate manifold – confirmed.** Of the 91, PCA k = 15 alarms on 2,
+  PCA k = 5 on 1, Isolation Forest on 7 (identical at their oracle 1 % thresholds); Jaccard of
+  the AE's and PCA k = 15's missed sets 0.69. Ensemble ceilings: union of the four detectors
+  82.5 % at 1.77 % FPR, rank-average fusion 79.1 % at 1.00 % – **no unsupervised combination
+  reaches 85 %**, matching the planning diagnosis.
+* **Tooling:** `--data-seed` (recorded in the effective config snapshot, ADR 24),
+  `baselines --suffix` (ADR 25), `compare --figure-prefix` + "Data seed" / "Test frauds"
+  columns + `_dseed` families, `fraud_ae/diagnose.py` (ADRs 26–27), `scripts/run_v2_protocol.sh`
+  (≈ 5 min CPU), `results/v2_protocol.md` (11 rows). `scripts/run_ablations.sh` now passes the
+  explicit v1 run list to `compare`, so `results/comparison.md` keeps its 21 v1 rows. 122 tests.
+* **Decision G7:** pooled `meets_target` is false and the ceiling of unsupervised combinations
+  is ≈ 82 % → **Phase 8** (unsupervised ceiling: VAE, latent density, hour-segmented
+  thresholds, more training data), selection on data seed 0, confirmation on seeds 1–4 as
+  pre-registered. The pooled protocol with `fraud_val_fraction = 0` is the measurement for every
+  v2 phase from here on.
+
+### Phase 8 – methods (expected gain in parentheses)
+
+1. **More training data** – `legit_fractions = [0.8, 0.1, 0.1]`; 28 k legit val rows still
+   resolve the 0.9 % quantile to ±0.05 % (+0–1 pp).
+2. **Variational AE with reconstruction probability** (An & Cho 2015, the abstract's own
+   reference) – `model.kind = "vae"`, score = −log p(x | z) averaged over L = 10 samples,
+   new `scoring` method `recon_prob` (+0–3 pp).
+3. **Latent-density score** (DAGMM-lite) – Gaussian mixture (k ∈ {4, 8}) fitted on encoder codes
+   of val-legit; score = rank-average of MSE and latent negative log-likelihood; aims at frauds
+   with an ordinary residual but an unusual code; calibration stored in `score_calibration.npz`
+   (+1–3 pp).
+4. **Hour-segmented thresholds** – `threshold.strategy = "quantile_by_hour"`: night (00–06 h)
+   and day legit quantiles at the same 0.9 %, identical global FPR, recall reallocated toward
+   the night-time fraud cluster (±1 pp, cheap).
+5. **Documented negative results, no new runs** – seed / bottleneck ensembles and score fusion
+   (≤ 0 pp in the diagnosis above).
+
+Selection rule, pre-registered: choose the best method on data seed 0, confirm on data seeds
+1–4, never re-pick on the confirmation seeds. All variants use the v1 run-directory contract so
+`fraud-ae compare` and `fraud-ae report` work unchanged.
+
+### Phase 9 – methods
+
+Protocol: the 473 frauds are split into 5 fixed folds (`folds.json`); a method sees the
+train-fold frauds, the held-out fold is pooled for evaluation → out-of-fold recall over all 473
+frauds with a Wilson interval. The legit split is unchanged and the threshold is still the legit
+quantile of the method's own score (probability or anomaly score alike), so FPR < 1 % holds by
+construction for every method. Hyper-parameters are fixed in advance or chosen inside the
+training folds, never on the held-out fold. A unit test asserts that no fraud index appears in
+a train fold and in its own evaluation fold. The few-label curve (25 / 50 / 100 / all
+train-fold frauds) is a deliverable for every method, because ~380 training labels per fold are
+optimistic for a real deployment.
+
+0. **Fully supervised classifiers (first-class candidates).** Trained on train-legit + train-fold
+   frauds: class-weighted logistic regression (linear reference), `HistGradientBoostingClassifier`
+   (expected strongest tabular model), and a small MLP in PyTorch with the AE's encoder
+   architecture; imbalance handled by class weights and, as a variant, random undersampling of
+   legit rows (Dal Pozzolo et al. 2015). The diagnosis gives 82–84 % on the hard v1 test half
+   with 236 labels; pooled over folds 85–88 % is expected. Deliverable `fraud_ae/supervised.py`
+   + `fraud-ae supervised`, same run-directory contract.
+1. **Negative-example AE** – loss = MSE on legit + λ · max(0, m − MSE) on train-fold frauds,
+   with the margin m taken from the legit score quantile; variant with a Deep-SAD-style term
+   pulling legit codes toward a centre and pushing fraud codes away. `train.labelled_frauds =
+   true`. Expected: the AE itself crosses the plateau for frauds similar to the labelled ones.
+2. **Hybrid stacking** – features `[x, residual vector, AE score]` → class-weighted logistic
+   regression and `HistGradientBoostingClassifier` (scikit-learn is already a dependency);
+   threshold = legit quantile of the classifier score. Expected: most of the label-driven gain.
+3. **AE as a feature for the supervised models** – the hybrid of item 2 is also the test of
+   whether the legit-only AE adds anything once labels exist: compare gradient boosting on `x`
+   alone (item 0) with gradient boosting on `[x, residual, AE score]` at equal label budgets.
+   If the AE score adds nothing, the report says so.
+
+### Phase 10 – methods
+
+* **Rolling threshold.** Re-estimate the legit quantile on a sliding window of the most recent
+  legit traffic and evaluate rolling-origin (train on the past, score the next window). Target:
+  FPR within [0.8 %, 1.0 %] on every window (v1 temporal split drifted to 0.53 %).
+* **Variance.** Five model seeds and five data seeds of the winning method; report mean ± std.
+* **Evasion probe.** Gradient descent on the input of each detected fraud to minimise its score
+  below the threshold under an L2 budget; report the median budget and which features move.
+  Turns the threat-model discussion into a measured limitation.
+
 ## Risks
 
 | Risk | Mitigation |
@@ -135,6 +301,12 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
 | Leakage (scaler, duplicates, threshold tuned on test) | unit-tested invariants; test set touched once in Phase 4 |
 | Non-determinism | seeds + deterministic torch; seed variance reported |
 | torch install pulls CUDA wheels | CPU index pinned in `pyproject.toml` |
+| v2: label leakage in Phase 9 (a fraud in both a train fold and its own evaluation fold) | folds fixed in `folds.json`; unit test on fold disjointness; threshold still legit-only |
+| v2: selection on the pooled test numbers (test-set tuning in disguise) | pre-registered rule: pick on data seed 0, confirm on data seeds 1–4; both shown in the results table |
+| v2: few labels available in practice | few-label curve (25 / 50 / 100 / all) is a Phase 9 deliverable for every method, supervised included |
+| v2: supervised models learn the two-day fraud campaigns rather than fraud in general | Phase 10 rolling-origin validation applies to the supervised winner as well; the report presents supervised and legit-only results as complementary (labels buy recall on known patterns, the AE covers departures from normal traffic) |
+| v2: VAE / margin-loss training instability | seeded, early stopping on the legit validation loss, fall back to the plain AE score on NaN |
+| v2: pooled numbers read as "the same test set as v1" | the report states that pooled frauds are evaluated once per method; v1 numbers stay in the report for comparability |
 
 ## Report outline (Phase 6)
 1. Problem, threat model and the 85 % / 1 % criterion (with its precision consequence)
@@ -143,3 +315,10 @@ Milestones: **M1** first trained AE (end of Phase 2) · **M2** criterion verdict
 4. Threshold selection (why val-legit quantile)
 5. Results: AE vs baselines, CIs, figures, ablations, seed variance
 6. Limitations (point-anomaly detector, PCA-obfuscated features, no account history, adversarial evasion) and conclusions
+
+Report v2 delta (Phase 11): 6.8 pooled-fraud protocol and repeated splits (why the v1 val/test
+halves differ, pooled estimate with CI, literature-protocol row); 6.9 unsupervised ceiling
+(VAE, latent density, hour-segmented thresholds, negative results); 6.10 supervised,
+hybrid and weakly-supervised AE results out-of-fold with the few-label curve, rolling-threshold
+and evasion results; abstract and conclusions rewritten around "what labels buy" – the AE as
+the legit-only baseline, the supervised classifier as the labelled upper line.
