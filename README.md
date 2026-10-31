@@ -9,9 +9,15 @@ threshold chosen on legitimate validation data. Success criterion from the abstr
   every number comes from a JSON artifact) · Abstract: `tmp.md` · Roadmap: `ROADMAP.md` ·
   Design and decisions: `ARCHITECTURE.md` · Changelog: `report/CHANGELOG.md` · Prompt log:
   `report/prompt_log.md`
-* **Outcome in one line:** test recall **77.2 %** [71.5 %, 82.1 %] at FPR 0.955 % – the FPR half
-  of the criterion holds, the 85 % recall half does not, for the base model and all eleven
-  variants; the AE still beats PCA (70.0 % at best) and Isolation Forest (56.1 %) at the same FPR.
+* **Outcome in one line (v1, legit-only AE):** test recall **77.2 %** [71.5 %, 82.1 %] at FPR
+  0.955 % – the FPR half of the criterion holds, the 85 % recall half does not, for the base
+  model and all eleven variants; the AE still beats PCA (70.0 % at best) and Isolation Forest
+  (56.1 %) at the same FPR. Measured on all 473 frauds (Roadmap v2): **80.8 %** [77.0 %, 84.1 %].
+* **Outcome in one line (v2, labels inside the model):** with the labelled frauds used
+  out-of-fold (5 folds), every method clears the criterion – gradient boosting **89.2 %**
+  [86.1 %, 91.7 %] at FPR 0.91 %, the autoencoder itself with a margin loss **87.3 %**
+  [84.0 %, 90.0 %] at 0.94 %; the AE as an extra feature adds nothing measurable; 25 labels per
+  fold buy 1–3 pp, about 50 are needed to reach 85 % (milestone M5, Phase 9).
 * Dataset: Kaggle *Credit Card Fraud Detection* (ULB MLG), 284 807 transactions, 492 frauds
   (283 726 / 473 after dropping 1 081 exact duplicates). Place the Kaggle zip at `dataset.zip`
   (git-ignored); `fraud-ae prepare` extracts it and verifies the CSV's sha256 pinned in the configs.
@@ -58,6 +64,14 @@ uv run fraud-ae all --config configs/v2_unsup_by_hour.toml    --run runs/ae_by_h
 uv run fraud-ae all --config configs/v2_unsup_train80.toml    --run runs/ae_train80_dseed0    --data-seed 0   # legit 80/10/10
 uv run fraud-ae threshold --run runs/ae_pooled --strategy quantile_by_hour                    # strategies/methods are also overrides
 scripts/run_v2_unsupervised.sh                                            # all candidates on data seed 0, pre-registered pick, confirmation on seeds 1–4 (≈ 8 min)
+
+# Roadmap v2, Phase 9 – labelled frauds inside the model, 5-fold out-of-fold (needs runs/ae_pooled)
+uv run fraud-ae supervised --config configs/v2_supervised.toml                                # 8 methods × {25, 50, 100, all} labels → runs/sup_<method>
+uv run fraud-ae supervised --config configs/v2_supervised.toml --methods hgb logreg --budgets 50   # a subset
+uv run fraud-ae semi       --config configs/v2_supervised.toml --ae-run runs/ae_pooled         # only the fine-tuned AEs (neg_ae, sad_ae)
+uv run fraud-ae few-label  --runs runs/sup_hgb runs/sup_neg_ae --reference runs/ae_pooled      # few-label table + figure
+uv run fraud-ae compare    --runs runs/ae_pooled runs/sup_* --out results/v2_supervised.md --figure-prefix v2_sup_
+scripts/run_v2_supervised.sh                                              # all of the above (≈ 25 min)
 ```
 
 **Reproduce the whole study from a clean checkout** (CPU, ≈ 10 min): `uv sync --group dev`,
@@ -84,14 +98,17 @@ for the first time by `evaluate`.
 
 ```
 configs/        TOML experiments (base + ablations: latent size, no time feature, score method, BatchNorm, temporal split;
-                v2_pooled / v2_literature: Roadmap v2 measurement protocol; v2_unsup_*: Phase 8 candidates)
+                v2_pooled / v2_literature: Roadmap v2 measurement protocol; v2_unsup_*: Phase 8 candidates;
+                v2_supervised: Phase 9 methods and fixed hyper-parameters)
 scripts/        run_ablations.sh (every v1 run, baselines, comparison, report), run_v2_protocol.sh (Phase 7),
-                run_v2_unsupervised.sh (Phase 8), check.sh
-src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, diagnose, plots, report, cli
+                run_v2_unsupervised.sh (Phase 8), run_v2_supervised.sh (Phase 9), check.sh
+src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, diagnose,
+                supervised, semi, plots, report, cli
 tests/          pytest suite on the synthetic creditcard-like frame from fraud_ae.synthetic
 data/           raw/ (extracted CSV) and processed/ (splits, scaler, data_report.json) – git-ignored
 runs/           one directory per experiment – git-ignored
-results/        comparison.md, ablations_phase4.md, v2_protocol.md, v2_unsupervised.md – generated from runs/*/metrics.json (tracked)
+results/        comparison.md, ablations_phase4.md, v2_protocol.md, v2_unsupervised.md, v2_supervised.md,
+                v2_few_label.md – generated from runs/* (tracked)
 report/         report.md (rendered), report_template.md (source of truth), CHANGELOG.md, prompt_log.md, figures/
 ```
 
@@ -106,10 +123,13 @@ M4): the same autoencoder measured on all 473 frauds reaches **80.8 %** [77.0 %,
 frauds are indistinguishable from legitimate rows by reconstruction error. **Phase 8** (version
 1.2.0): the legit-only ceiling is proven – more training data, a VAE with reconstruction
 probability, latent-density scores and hour-segmented thresholds all stay at ≈ 81–82 % at 1 % FPR
-(best five-split mean 81.1 % ± 0.9 %, best single split 82.5 %); gate G8 sends the work to
-Phase 9 (labels inside the model). The sections below are the per-phase working notes; outcomes
-are in `ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1 report is unchanged until
-Phase 11 (report v2).
+(best five-split mean 81.1 % ± 0.9 %, best single split 82.5 %). **Phase 9** (version 1.3.0,
+milestone M5): with the labelled frauds inside the model, evaluated out-of-fold over all 473
+frauds, every method clears the criterion – gradient boosting 89.2 % [86.1 %, 91.7 %], the
+autoencoder fine-tuned with a margin loss 87.3 % [84.0 %, 90.0 %], all at FPR < 1 %; the AE as
+a feature adds nothing measurable once labels exist. Next: Phase 10 (robustness of the winners)
+and Phase 11 (report v2). The sections below are the per-phase working notes; outcomes are in
+`ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1 report is unchanged until Phase 11.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -328,3 +348,48 @@ is re-picked afterwards. Table: `results/v2_unsupervised.md`; figures
   `reconstruction_probability` in `scoring.py`, `hour_segmented_threshold` in `threshold.py`,
   `data.hours_from_features`; `fraud-ae threshold --method / --strategy` accept the new values.
   138 tests.
+
+### Phase 9 – labels inside the model (`fraud-ae supervised` / `semi` / `few-label`, milestone M5)
+
+**Protocol.** The 473 frauds of the pooled split are cut into five fixed folds (`folds.json` in
+every run directory). The fold-*k* model is fitted on all 169 952 training legit rows plus the
+378–379 frauds of the other folds, takes its threshold as the 0.9 % quantile of its scores on
+the legit validation rows (never a fraud label), and scores only the fold-*k* validation and
+test rows; scores are divided by the fold threshold, so every run holds out-of-fold scores with
+the common threshold 1.0 and the ordinary evaluator gives the pooled recall with its Wilson
+interval. Hyper-parameters are fixed in `configs/v2_supervised.toml`; nothing is tuned on a
+held-out fold. Every method is also run with 25 / 50 / 100 labelled frauds per training fold.
+
+| Method (out-of-fold, all labels, 473 frauds) | Recall [Wilson 95 %] | FPR | 25 / 50 / 100 labels |
+|---|---|---:|---|
+| `hybrid_hgb` – HGB on `[x, residual, AE score]` | **89.6 %** [86.6, 92.1] | 0.886 % | 82.0 / 83.9 / 83.9 % |
+| `hgb` – HistGradientBoosting, class-weighted | **89.2 %** [86.1, 91.7] | 0.909 % | 82.0 / 84.6 / 85.2 % |
+| `logreg` – logistic regression, class-weighted | **88.8 %** [85.6, 91.3] | 0.918 % | 74.8 / 82.7 / 85.6 % |
+| `hgb_under` – HGB, legit under-sampled 20:1 | **88.4 %** [85.2, 91.0] | 0.920 % | 83.9 / 86.0 / 87.1 % |
+| `hybrid_logreg` – LogReg on `[x, residual, AE score]` | 88.2 % [84.9, 90.8] | 0.879 % | 71.5 / 78.6 / 83.3 % |
+| `neg_ae` – **the AE** fine-tuned with a margin loss on frauds | 87.3 % [84.0, 90.0] | 0.941 % | 81.4 / 83.7 / 84.4 % |
+| `mlp` – 31-20-10-1, balanced mini-batches | 86.9 % [83.6, 89.6] | 0.803 % | 73.6 / 81.0 / 82.9 % |
+| `sad_ae` – the AE with a Deep-SAD latent term | 86.7 % [83.3, 89.4] | 0.902 % | 83.1 / 84.6 / 84.4 % |
+| legit-only AE (`ae_pooled`, Phase 7) | 80.8 % [77.0, 84.1] | 0.955 % | – |
+
+* **Criterion met** (milestone M5): all eight methods exceed 85 % recall at FPR < 1 % with
+  all labels; four keep the whole interval above 85 %. The AE itself, warm-started from
+  `runs/ae_pooled` and fine-tuned for 20 epochs with a margin loss on the labelled frauds,
+  crosses the line at 87.3 %.
+* **What labels buy / what the AE buys.** Labels: +8.8 pp for the best classifier and
+  +6.5 pp for the AE; 25 labels per fold already give +1 to +3 pp for tree models and the
+  fine-tuned AEs, about 50 are needed to reach 85 % (`hgb_under`), while the linear and MLP
+  classifiers need ≥ 100 labels to beat the legit-only AE at all. The AE as an extra feature
+  changes gradient boosting by +0.4 pp at all labels and nothing or less at smaller budgets,
+  and costs the linear model 0.6–4 pp: once labels exist the residual adds nothing measurable.
+* **Files.** `src/fraud_ae/supervised.py` (folds, protocol, classifiers, hybrid features, run
+  writer, few-label table), `src/fraud_ae/semi.py` (fine-tuning with margin / Deep-SAD loss),
+  `configs/v2_supervised.toml`, `scripts/run_v2_supervised.sh` (≈ 25 min), tracked outputs
+  `results/v2_supervised.md`, `results/v2_few_label.md`,
+  `report/figures/{v2_few_label,v2_sup_comparison_recall}.png`. Run directories
+  `runs/sup_<method>` are git-ignored. 147 tests.
+* **Review.** The diff was reviewed independently before the numbers were final; the fixes
+  (few-label budget skip, `semi` method restriction, bounded Deep-SAD term with divergence
+  guard, dropped partial batches, float64 MLP probabilities, per-fold FPR warning) are in, the
+  affected methods were re-run, and the remaining caveat – AE residuals of the training legit
+  rows are in-sample, train MSE 0.418 vs val 0.420 – is documented in `ARCHITECTURE.md`.

@@ -572,3 +572,69 @@ def missed_frauds(d, out: Path) -> Path:
     ax_f.legend(loc="lower left", fontsize=8)
     fig.tight_layout()
     return _save(fig, out)
+
+
+# --------------------------------------------------------------------------- Phase 9: few-label
+
+# Fixed-order series palette for up to eight methods (identity never cycles).
+SERIES_COLORS = (
+    COLOR_LEGIT,
+    COLOR_FRAUD,
+    COLOR_MISSED,
+    "#2f9e6e",
+    "#c0398a",
+    "#8a7a2a",
+    "#3bb3c3",
+    "#9a4b2f",
+)
+
+
+def few_label_curve(
+    rows: list[dict], out: Path, reference: dict | None = None, target_recall: float = 0.85
+) -> Path:
+    """Out-of-fold recall (Wilson whiskers) vs labelled frauds per training fold, one line per
+    method; ``rows`` are the ``few_label.json`` payloads with a ``run`` key. ``reference`` draws
+    the legit-only AE as a horizontal line."""
+    fig, ax = plt.subplots(figsize=(7.5, 4.6))
+    budgets: set[float] = set()
+    for i, r in enumerate(rows):
+        pts = sorted(
+            ((float(np.mean(b["labels_per_fold"])), b) for b in r["budgets"]), key=lambda t: t[0]
+        )
+        x = np.array([p[0] for p in pts])
+        rec = np.array([p[1]["recall"] for p in pts])
+        lo = np.array([p[1]["recall_ci_wilson"][0] for p in pts])
+        hi = np.array([p[1]["recall_ci_wilson"][1] for p in pts])
+        budgets.update(x.tolist())
+        color = SERIES_COLORS[i % len(SERIES_COLORS)]
+        ax.errorbar(
+            x,
+            rec,
+            yerr=[rec - lo, hi - rec],
+            color=color,
+            lw=2,
+            marker="o",
+            ms=5,
+            capsize=2,
+            label=r.get("model", r["run"]),
+        )
+    if reference:
+        ax.axhline(
+            reference["recall"],
+            color=COLOR_TEXT,
+            lw=1.2,
+            ls=":",
+            label=f"legit-only AE ({reference['recall']:.1%})",
+        )
+    ax.axhline(target_recall, color=COLOR_TEXT, lw=1, ls="--", label="target 85 %")
+    ax.set_xscale("log")
+    ticks = sorted(budgets)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f"{t:g}" for t in ticks])
+    ax.minorticks_off()
+    ax.set_xlabel("labelled frauds per training fold (log scale)")
+    ax.set_ylabel("out-of-fold recall at FPR < 1 %")
+    ax.set_ylim(0, 1.0)
+    ax.set_title("What labels buy – recall vs label budget")
+    ax.legend(loc="lower right", fontsize=7, ncol=2)
+    return _save(fig, out)

@@ -158,13 +158,14 @@ thresholded the same way (legit quantile of its own score) and judged by the sam
 |---|---|---|---|---|---|
 | 7 | **Diagnosis & measurement protocol** ✅ | pooled-fraud protocol (`fraud_val_fraction = 0`), repeated legit splits (`--data-seed`, 5 seeds), `fraud-ae diagnose` (missed-fraud profiles, overlap matrix, fusion upper bounds), literature-protocol replication (all frauds in test, no dedupe) | `configs/v2_{pooled,literature}.toml`, `--data-seed` on `prepare/train/baselines/all` (`<processed_dir>_dseed<N>`; `threshold`/`evaluate` follow the run snapshot), `baselines --suffix`, `compare --figure-prefix`, `diagnose.py` + `fraud-ae diagnose` → `diagnostics.json` + `figures/missed_frauds.png`, `scripts/run_v2_protocol.sh`, `results/v2_protocol.md` | **G7 taken:** pooled recall 80.8 % [77.0 %, 84.1 %] at FPR 0.955 % (382 of 473; needs 403); 5 data seeds 80.5 % ± 1.0 %; diagnosis confirms "missed frauds are on the manifold" (91 missed, legit-percentile median 83.7 %, V14/V17 ≈ −1.9/+1.6 vs −8.0/−8.4 for detected); `meets_target` false → Phase 8 | 1 session |
 | 8 | **Unsupervised ceiling** (legit-only training) ✅ | more training data (80/10/10), VAE reconstruction probability, latent-density score (GMM on codes), hour-segmented thresholds; negative results documented | `model.kind = "vae"`, `scoring` methods `recon_prob` / `latent_gmm` / `latent_nll`, `threshold.strategy = "quantile_by_hour"`, `configs/v2_unsup_*.toml` (6), `scripts/run_v2_unsupervised.sh` (mechanical pre-registered selection), `results/v2_unsupervised.md`, `report/figures/v2_unsup_*.png` | **G8 taken:** seed-0 table 9.9–81.0 %; selected `train80` (81.0 %), confirmed on seeds 1–4: **81.1 % ± 0.9 %** vs base 80.8 % ± 1.1 % (paired mean +0.3 pp, sign changes across seeds); VAE 79.3 %, by-hour 79.9 %, latent GMM 51.6–55.0 %, latent NLL 9.9 %; no run meets the criterion → **Phase 9** with plain MSE as the AE component | 1 session |
-| 9 | **Supervised & weakly-supervised learning** | 5-fold CV over the 473 frauds; fully supervised classifiers (logistic regression, gradient boosting, small MLP; class weighting vs undersampling); negative-example AE (margin / deviation loss, Deep-SAD-style latent term); hybrid stacking `[x, residual, AE score]`; few-label curve (25 / 50 / 100 / all) for every method | `fraud_ae/supervised.py`, `fraud_ae/semi.py`, `folds.json`, `fraud-ae supervised` / `fraud-ae semi --config configs/v2_*.toml`, `results/v2_supervised.md`, few-label figure | **G9 (milestone M5):** pooled out-of-fold recall ≥ 85 % at FPR < 1 % with CI for at least one method; the table shows supervised, hybrid and AE-based rows side by side with their label budgets, so the report can state what labels buy; if no method reaches it, the ceiling and the few-label curve are the result | 1.5–2 sessions |
+| 9 | **Supervised & weakly-supervised learning** ✅ | 5-fold CV over the 473 frauds; fully supervised classifiers (logistic regression, gradient boosting, small MLP; class weighting vs undersampling); negative-example AE (margin loss), Deep-SAD-style latent term; hybrid stacking `[x, residual, AE score]`; few-label curve (25 / 50 / 100 / all) for every method | `fraud_ae/supervised.py`, `fraud_ae/semi.py`, `folds.json` per run, `configs/v2_supervised.toml`, `fraud-ae supervised` / `fraud-ae semi` / `fraud-ae few-label`, `scripts/run_v2_supervised.sh`, `results/v2_supervised.md`, `results/v2_few_label.md`, `report/figures/v2_few_label.png` | **G9 reached (milestone M5):** every method clears the criterion with all labels – out-of-fold recall 86.7–89.6 % at FPR 0.80–0.94 %, best `hybrid_hgb` 89.6 % [86.6 %, 92.1 %], plain `hgb` 89.2 % [86.1 %, 91.7 %], the AE with a margin loss 87.3 % [84.0 %, 90.0 %]; four methods keep the whole interval above 85 %; with 25 labels per fold the best method reaches 83.9 %, with 100 labels three methods pass; the AE as a feature adds nothing measurable (+0.4 pp for HGB, −0.6 to −4 pp for logistic regression) | 1.5 sessions |
 | 10 | **Robustness & deployment realism** | rolling-origin temporal validation with rolling threshold re-estimation (fixes the Phase 5 drift), seed and data-seed variance of the winner, adversarial evasion probe (minimal perturbation to cross below the threshold) | `results/v2_robustness.md`, evasion figure | rolling threshold holds FPR within [0.8 %, 1.0 %] on every window; variance tables; median evasion budget reported | 0.5–1 session |
 | 11 | **Report v2** | sections 6.8–6.10, updated abstract and conclusions, every number via placeholders | `report/report_template.md` → `report/report.md`, CHANGELOG 2.0.0, README outcome line | **M6:** report rendered from artifacts, committed report ≡ fresh render (existing test) | 0.5 session |
 
 Milestones: **M4** pooled protocol and diagnosis (end of Phase 7, reached 2026-10-29) · **M5**
-criterion reached or ceiling proven (end of Phase 9; the legit-only half of the ceiling is
-proven as of Phase 8, 2026-10-31) · **M6** report v2 (end of Phase 11). Total ≈ 4–5 sessions.
+criterion reached or ceiling proven (end of Phase 9 – **reached 2026-10-31**: legit-only
+ceiling ≈ 81–82 % proven in Phase 8, criterion crossed with labels in Phase 9) · **M6** report v2
+(end of Phase 11). Total ≈ 4–5 sessions.
 
 ### Phase 7 – methods
 
@@ -329,6 +330,77 @@ optimistic for a real deployment.
    whether the legit-only AE adds anything once labels exist: compare gradient boosting on `x`
    alone (item 0) with gradient boosting on `[x, residual, AE score]` at equal label budgets.
    If the AE score adds nothing, the report says so.
+
+### Phase 9 outcome (2026-10-31, milestone M5)
+
+Protocol as pre-registered (`configs/v2_supervised.toml`, `scripts/run_v2_supervised.sh`,
+≈ 25 min CPU): pooled split (data seed 42, the `runs/ae_pooled` split), 473 frauds in five fixed
+folds (95 / 95 / 95 / 94 / 94, `folds.json` in every run directory), one model per fold fitted
+on all 169 952 training legit rows + the 378–379 frauds of the other folds, threshold = that
+model's 0.9 % val-legit quantile, every validation and test row scored by exactly one model
+that never saw it, scores normalised by the fold threshold (common threshold 1.0, ADR 31).
+Hyper-parameters fixed in the config; nothing was tuned on the held-out folds.
+
+* **All eight methods clear the criterion with all labels** (`results/v2_supervised.md`;
+  TP needed 403 of 473, FP allowed 566 of 56 650):
+
+  | Method (out-of-fold, all labels) | Recall [Wilson 95 %] | FPR | TP | Recall @ oracle 0.1 % FPR |
+  |---|---|---:|---:|---:|
+  | `hybrid_hgb` – HGB on `[x, residual, AE score]` | **89.6 %** [86.6, 92.1] | 0.886 % | 424 | 85.4 % |
+  | `hgb` – HistGradientBoosting, balanced | **89.2 %** [86.1, 91.7] | 0.909 % | 422 | 85.6 % |
+  | `logreg` – logistic regression, balanced | **88.8 %** [85.6, 91.3] | 0.918 % | 420 | 83.3 % |
+  | `hgb_under` – HGB, legit under-sampled 20:1 | **88.4 %** [85.2, 91.0] | 0.920 % | 418 | 85.2 % |
+  | `hybrid_logreg` – LogReg on `[x, residual, AE score]` | 88.2 % [84.9, 90.8] | 0.879 % | 417 | 80.8 % |
+  | `neg_ae` – **the AE** fine-tuned with a margin loss | 87.3 % [84.0, 90.0] | 0.941 % | 413 | 62.8 % |
+  | `mlp` – 31-20-10-1, balanced batches | 86.9 % [83.6, 89.6] | 0.803 % | 411 | 82.9 % |
+  | `sad_ae` – the AE with a Deep-SAD latent term | 86.7 % [83.3, 89.4] | 0.902 % | 410 | 80.5 % |
+  | `ae_pooled` – legit-only AE (Phase 7) | 80.8 % [77.0, 84.1] | 0.955 % | 382 | 55.8 % |
+
+  Four methods keep the entire interval above 85 % (`hybrid_hgb`, `hgb`, `logreg`,
+  `hgb_under`); the AE-based methods pass on the point estimate with lower bounds of 83–84 %.
+  Precision at this operating point is 44–48 % for every labelled method (41 % legit-only).
+  The 0.1 %-FPR column shows where the margin loss stops helping: the fine-tuned AE pushes
+  the labelled-like frauds across the 1 % threshold but does not reorder the extreme tail.
+* **Few-label curve** (`results/v2_few_label.md`, `report/figures/v2_few_label.png`; labels per
+  training fold, same folds and thresholds):
+
+  | Labels per fold | best method | recall | methods ≥ 85 % |
+  |---:|---|---:|---|
+  | 0 (legit-only AE) | – | 80.8 % | none |
+  | 25 | `hgb_under` | 83.9 % | none (`sad_ae` 83.1 %, `hgb` / `hybrid_hgb` 82.0 %, `neg_ae` 81.4 %; `logreg` 74.8 %, `mlp` 73.6 %, `hybrid_logreg` 71.5 %) |
+  | 50 | `hgb_under` | 86.0 % | `hgb_under` |
+  | 100 | `hgb_under` | 87.1 % | `hgb_under`, `logreg` 85.6 %, `hgb` 85.2 % |
+  | all (378–379) | `hybrid_hgb` | 89.6 % | all eight |
+
+  Tree models and the fine-tuned AEs degrade gracefully (25 labels still buy +1 to +3 pp over
+  no labels); the linear and MLP classifiers need ≥ 100 labels to beat the legit-only AE at all.
+  Under-sampling beats class weighting at small budgets (83.9 % vs 82.0 % at 25 labels) and
+  loses 0.8 pp at full labels.
+* **What the AE buys once labels exist – nothing measurable.** `hybrid_hgb` vs `hgb`: +0.4 pp
+  at all labels (2 frauds), 0 / −0.7 / −1.3 pp at 25 / 50 / 100 labels; `hybrid_logreg` vs
+  `logreg`: −0.6 / −3.3 / −4.1 / −2.3 pp. The residual and the AE score are already functions
+  of `x` that gradient boosting can learn, and they add noise to the linear model. The report
+  will say so.
+* **What labels buy over the AE.** +8.8 pp at full labels (89.6 % vs 80.8 %) for the best
+  classifier, +6.5 pp for the AE itself (`neg_ae`); the AE needs all ≈ 378 labelled frauds per
+  fold to cross 85 %, the best tree model about 50. The ceiling of Phase 8 (≈ 81–82 %) was
+  therefore a ceiling of the *legit-only* setting, not of the feature set.
+* **Review of the implementation** (independent code review run on the diff before the
+  numbers were final; findings fixed, affected methods re-run): the few-label budget skip
+  used the fold-0 label count (now the smallest fold's); `fraud-ae semi` accepted non-AE
+  methods (now restricted); the Deep-SAD push-away term was unbounded (ε = 0.01 caps it, a
+  non-finite loss stops fine-tuning and is recorded); the last partial legit batch is dropped
+  in the MLP and the fine-tuning loops; validation rows are scored once per fold; MLP
+  probabilities are computed in float64; a per-fold val-FPR warning guards against tied scores;
+  the AE-run/split check and the `semi` restriction are covered by tests. Documented, not
+  changed: the hybrid features of training legit rows are in-sample for the AE (train MSE
+  0.418 vs val 0.420 – negligible). 147 tests.
+* **Decision G9 → milestone M5 reached.** The criterion *recall ≥ 85 % at FPR < 1 %* is met
+  on all 473 frauds, out-of-fold, by every method that sees the labelled frauds, including the
+  autoencoder itself with a margin loss. Phase 10 takes **`hgb`** as the supervised winner
+  (plain features: `hybrid_hgb` is 0.4 pp better but not consistently, and it needs the AE)
+  and **`neg_ae`** as the AE-based winner for the robustness checks (rolling threshold,
+  seed and data-seed variance, evasion probe).
 
 ### Phase 10 – methods
 
