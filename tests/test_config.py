@@ -39,6 +39,11 @@ def test_config_is_frozen(base_config_path):
         "[threshold]\ntarget_fpr = 1.5\n",
         "[data]\nno_such_key = 1\n",
         "[nonsense]\nx = 1\n",
+        "[score]\nmethod = 'recon_prob'\n",  # needs model.kind = 'vae'
+        "[data]\ntime_feature = 'drop'\n[threshold]\nstrategy = 'quantile_by_hour'\n",
+        "[score]\nn_samples = 0\n",
+        "[threshold]\nnight_hours = [6, 3]\n",
+        "[model]\nkind = 'gan'\n",
     ],
 )
 def test_invalid_configs_are_rejected(tmp_path, bad_toml):
@@ -46,3 +51,16 @@ def test_invalid_configs_are_rejected(tmp_path, bad_toml):
     p.write_text(bad_toml)
     with pytest.raises(ConfigError):
         load_config(p)
+
+
+def test_phase8_configs_carry_their_method(project_root):
+    vae = load_config(project_root / "configs" / "v2_unsup_vae.toml")
+    assert (
+        vae.model.kind == "vae" and vae.score.method == "recon_prob" and vae.score.n_samples == 10
+    )
+    hour = load_config(project_root / "configs" / "v2_unsup_by_hour.toml")
+    assert hour.threshold.strategy == "quantile_by_hour" and hour.threshold.night_hours == (0, 6)
+    gmm = load_config(project_root / "configs" / "v2_unsup_latent_gmm8.toml")
+    assert gmm.score.method == "latent_gmm" and gmm.score.gmm_components == 8
+    t80 = load_config(project_root / "configs" / "v2_unsup_train80.toml")
+    assert t80.data.legit_fractions == (0.8, 0.1, 0.1) and t80.data.fraud_val_fraction == 0.0

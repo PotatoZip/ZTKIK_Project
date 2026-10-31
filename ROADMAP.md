@@ -157,14 +157,14 @@ thresholded the same way (legit quantile of its own score) and judged by the sam
 | # | Phase | Scope | Deliverables | Exit criteria / decision gate | Effort |
 |---|---|---|---|---|---|
 | 7 | **Diagnosis & measurement protocol** ✅ | pooled-fraud protocol (`fraud_val_fraction = 0`), repeated legit splits (`--data-seed`, 5 seeds), `fraud-ae diagnose` (missed-fraud profiles, overlap matrix, fusion upper bounds), literature-protocol replication (all frauds in test, no dedupe) | `configs/v2_{pooled,literature}.toml`, `--data-seed` on `prepare/train/baselines/all` (`<processed_dir>_dseed<N>`; `threshold`/`evaluate` follow the run snapshot), `baselines --suffix`, `compare --figure-prefix`, `diagnose.py` + `fraud-ae diagnose` → `diagnostics.json` + `figures/missed_frauds.png`, `scripts/run_v2_protocol.sh`, `results/v2_protocol.md` | **G7 taken:** pooled recall 80.8 % [77.0 %, 84.1 %] at FPR 0.955 % (382 of 473; needs 403); 5 data seeds 80.5 % ± 1.0 %; diagnosis confirms "missed frauds are on the manifold" (91 missed, legit-percentile median 83.7 %, V14/V17 ≈ −1.9/+1.6 vs −8.0/−8.4 for detected); `meets_target` false → Phase 8 | 1 session |
-| 8 | **Unsupervised ceiling** (legit-only training) | more training data (80/10/10), VAE reconstruction probability, latent-density score (GMM on codes), hour-segmented thresholds; negative results documented | `model.kind = "vae"`, `scoring` methods `recon_prob` / `latent_gmm`, `threshold.strategy = "quantile_by_hour"`, `configs/v2_unsup_*.toml`, `results/v2_unsupervised.md` | **G8:** ceiling table with CIs; selection on data seed 0, confirmation on seeds 1–4; pooled `meets_target` on the confirmation seeds → Phase 11, else (expected) → Phase 9 with the best unsupervised score as the AE component | 1 session |
+| 8 | **Unsupervised ceiling** (legit-only training) ✅ | more training data (80/10/10), VAE reconstruction probability, latent-density score (GMM on codes), hour-segmented thresholds; negative results documented | `model.kind = "vae"`, `scoring` methods `recon_prob` / `latent_gmm` / `latent_nll`, `threshold.strategy = "quantile_by_hour"`, `configs/v2_unsup_*.toml` (6), `scripts/run_v2_unsupervised.sh` (mechanical pre-registered selection), `results/v2_unsupervised.md`, `report/figures/v2_unsup_*.png` | **G8 taken:** seed-0 table 9.9–81.0 %; selected `train80` (81.0 %), confirmed on seeds 1–4: **81.1 % ± 0.9 %** vs base 80.8 % ± 1.1 % (paired mean +0.3 pp, sign changes across seeds); VAE 79.3 %, by-hour 79.9 %, latent GMM 51.6–55.0 %, latent NLL 9.9 %; no run meets the criterion → **Phase 9** with plain MSE as the AE component | 1 session |
 | 9 | **Supervised & weakly-supervised learning** | 5-fold CV over the 473 frauds; fully supervised classifiers (logistic regression, gradient boosting, small MLP; class weighting vs undersampling); negative-example AE (margin / deviation loss, Deep-SAD-style latent term); hybrid stacking `[x, residual, AE score]`; few-label curve (25 / 50 / 100 / all) for every method | `fraud_ae/supervised.py`, `fraud_ae/semi.py`, `folds.json`, `fraud-ae supervised` / `fraud-ae semi --config configs/v2_*.toml`, `results/v2_supervised.md`, few-label figure | **G9 (milestone M5):** pooled out-of-fold recall ≥ 85 % at FPR < 1 % with CI for at least one method; the table shows supervised, hybrid and AE-based rows side by side with their label budgets, so the report can state what labels buy; if no method reaches it, the ceiling and the few-label curve are the result | 1.5–2 sessions |
 | 10 | **Robustness & deployment realism** | rolling-origin temporal validation with rolling threshold re-estimation (fixes the Phase 5 drift), seed and data-seed variance of the winner, adversarial evasion probe (minimal perturbation to cross below the threshold) | `results/v2_robustness.md`, evasion figure | rolling threshold holds FPR within [0.8 %, 1.0 %] on every window; variance tables; median evasion budget reported | 0.5–1 session |
 | 11 | **Report v2** | sections 6.8–6.10, updated abstract and conclusions, every number via placeholders | `report/report_template.md` → `report/report.md`, CHANGELOG 2.0.0, README outcome line | **M6:** report rendered from artifacts, committed report ≡ fresh render (existing test) | 0.5 session |
 
 Milestones: **M4** pooled protocol and diagnosis (end of Phase 7, reached 2026-10-29) · **M5**
-criterion reached or ceiling proven (end of Phase 9) · **M6** report v2 (end of Phase 11).
-Total ≈ 4–5 sessions.
+criterion reached or ceiling proven (end of Phase 9; the legit-only half of the ceiling is
+proven as of Phase 8, 2026-10-31) · **M6** report v2 (end of Phase 11). Total ≈ 4–5 sessions.
 
 ### Phase 7 – methods
 
@@ -250,6 +250,54 @@ Total ≈ 4–5 sessions.
 Selection rule, pre-registered: choose the best method on data seed 0, confirm on data seeds
 1–4, never re-pick on the confirmation seeds. All variants use the v1 run-directory contract so
 `fraud-ae compare` and `fraud-ae report` work unchanged.
+
+### Phase 8 outcome (2026-10-31)
+
+All candidates are legit-only and measured under the pooled protocol (473 test frauds, val =
+legit only, 0.9 % val-legit quantile). `scripts/run_v2_unsupervised.sh` executed the
+pre-registered rule itself: every candidate on data seed 0, the best one (highest pooled recall
+with FPR < 1 %) re-run on data seeds 1–4 next to the base AE; `results/v2_unsupervised.md`
+(16 runs) states the selection at the bottom.
+
+* **Selection split (data seed 0, base AE 79.7 % at FPR 0.964 %):**
+
+  | Candidate (config `v2_unsup_*`) | Test recall [Wilson 95 %] | FPR | Recall @ oracle 1 % / 0.1 % |
+  |---|---|---:|---:|
+  | `train80` – legit 80/10/10 (train 226 k rows) | **81.0 %** [77.2, 84.3] | 0.763 % | 81.6 % / 60.9 % |
+  | `by_hour` – night/day quantiles (night thr 2.56 vs day 1.94) | 79.9 % [76.1, 83.3] | 0.941 % | 80.3 % / 55.4 % |
+  | `vae` – reconstruction probability, 10 draws | 79.3 % [75.4, 82.7] | 0.932 % | 79.7 % / 44.2 % |
+  | `latent_gmm8` / `latent_gmm4` – z(log MSE) + z(latent NLL) | 55.0 % / 51.6 % | 0.90 % / 0.91 % | 56.9 % / 53.7 % |
+  | `latent_nll` – code density alone (ROC-AUC 0.834) | 9.9 % [7.6, 13.0] | 0.884 % | 12.9 % / 1.7 % |
+
+* **Confirmation (data seeds 1–4, paired with the base AE on the same splits):** `train80`
+  82.5 / 80.3 / 80.3 / 81.2 % vs base 79.7 / 80.5 / 82.0 / 81.8 %. Over all five splits
+  **81.1 % ± 0.9 %** vs **80.8 % ± 1.1 %**; the paired difference is +1.3 / +2.8 / −0.2 / −1.7 /
+  −0.6 pp (mean +0.3 pp) – the seed-0 lead does not survive confirmation. Best single run
+  82.5 % (390 of 473; the criterion needs 403). The 80/10/10 precision (≈ 60 %) is not
+  comparable with the 60/20/20 rows (≈ 42 %): its test legit set is half the size, recall at a
+  fixed FPR is the like-for-like number. `train80` also gives the lowest FPR spread
+  (0.76–0.99 %), because its 28 k-row val-legit quantile still resolves 0.9 % well.
+* **Negative results, documented:** (i) the latent code of a 5-D bottleneck carries no
+  usable density signal for this fraud population – the GMM NLL alone ranks frauds barely above
+  chance at low FPR, and adding it to the residual term costs 25–28 pp; the information the AE
+  has about frauds is in the residual, not in *where* the code lies; (ii) the VAE's
+  reconstruction probability equals plain MSE at 1 % FPR (79.3 % vs 79.7 %) and is clearly
+  worse at 0.1 % FPR (44 % vs 56 %) – the learned per-feature variance down-weights exactly the
+  high-residual features (V14, V17, …) that separate the obvious frauds; (iii) hour-segmented
+  thresholds move 1 TP for −13 FP: the night segment (4 746 val rows) has a 32 % higher legit
+  quantile, so re-allocating alarms toward the night cluster buys nothing at 1 % FPR; (iv)
+  ensembles and fusion were not re-run – Phase 7 measured their oracle ceiling at 82.5 % (union
+  at 1.77 % FPR) and 79.1 % (rank fusion at 1 %).
+* **Checks:** `train80`'s val-legit MSE (0.412–0.424) is at the level of the 60/20/20 runs,
+  i.e. 33 % more legit rows do not change what the AE learns; the three latent runs share the
+  base checkpoint of their split (same `best_val_legit_mse` 0.43734), so their drop is purely
+  the scoring rule. Synthetic smoke runs of all six configs pass; 138 tests.
+* **Decision G8:** no legit-only candidate reaches 85 % on any split; the unsupervised ceiling
+  for this feature set is **≈ 81–82 % at 1 % FPR** (five-split means 80.8–81.1 %, best single
+  split 82.5 %), consistent with the Phase 7 diagnosis that the missed frauds are
+  indistinguishable from legitimate rows by reconstruction. → **Phase 9** (labels inside the
+  model) with the plain-MSE AE as the AE component; the 80/10/10 split is not adopted because
+  its gain is within noise and it halves the legit test set.
 
 ### Phase 9 – methods
 

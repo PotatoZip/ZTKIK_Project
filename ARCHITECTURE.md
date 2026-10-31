@@ -49,6 +49,14 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
   configs/v2_literature.toml (no dedupe)        → data/processed_literature/, runs/ae_literature
   → diagnose.py (fraud-ae diagnose) → runs/<run>/{diagnostics.json, figures/missed_frauds.png}
   → scripts/run_v2_protocol.sh → results/v2_protocol.md, report/figures/v2_protocol_*.png
+
+  Roadmap v2 (Phase 8, unsupervised ceiling – same pipeline, new configs):
+  configs/v2_unsup_train80.toml   legit 80/10/10            → data/processed_pooled80_dseedN
+  configs/v2_unsup_vae.toml       model.kind = "vae", score.method = "recon_prob"
+  configs/v2_unsup_latent_*.toml  score.method = "latent_gmm" | "latent_nll" (GMM on codes)
+  configs/v2_unsup_by_hour.toml   threshold.strategy = "quantile_by_hour"
+  → scripts/run_v2_unsupervised.sh (selection on data seed 0, confirmation on 1–4)
+                                  → results/v2_unsupervised.md, report/figures/v2_unsup_*.png
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
@@ -67,23 +75,34 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `config.py` | frozen dataclasses from TOML (stdlib `tomllib`), cross-field validation | `load_config(path) -> Config` |
 | `data.py` | Phase 1 pipeline and artifact I/O | `prepare(cfg, root, figures_dir) -> (Splits, report)`, `load_splits(dir)`, `split_table_markdown(report)` |
 | `synthetic.py` | 2 k-row creditcard-like frame for tests and `prepare --synthetic` (ADR 9) | `make_synthetic_frame(n_legit, n_fraud, n_duplicates, seed)` |
-| `model.py` | symmetric MLP autoencoder | `Autoencoder`, `build_model(input_dim, cfg)` |
-| `train.py` | seeding, manual seeded mini-batching, early stopping on val-legit MSE, best checkpoint, `ReduceLROnPlateau` | `train(cfg, X_train, X_val_legit, run_dir) -> Autoencoder`, `load_model(run_dir)`, `mse_per_sample(model, X)` |
-| `scoring.py` | residual-based anomaly scores + score/calibration I/O | `residuals`, `calibrate(model, X_val_legit)`, `score(model, X, cfg, calib)` with `mse` / `standardized` / `mahalanobis`, `save_scores` / `load_scores` |
-| `threshold.py` | threshold strategies, alarm rule `score > threshold` | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `save_threshold` / `load_threshold` |
+| `model.py` | symmetric MLP autoencoder; variational AE with Gaussian heads (Phase 8) | `Autoencoder`, `VariationalAutoencoder` (`encode_dist`, `decode`, `loss`, `reconstruction_nll`), `build_model(input_dim, cfg)` dispatching on `cfg.kind` |
+| `train.py` | seeding, manual seeded mini-batching, `model.loss` (MSE or −ELBO), early stopping on val-legit MSE, best checkpoint, `ReduceLROnPlateau` | `train(cfg, X_train, X_val_legit, run_dir) -> Autoencoder`, `load_model(run_dir)`, `mse_per_sample(model, X)` |
+| `scoring.py` | residual-based scores, VAE reconstruction probability, latent-density scores + score/calibration I/O | `residuals`, `codes`, `calibrate(model, X_val_legit, score_cfg, seed)`, `score(model, X, cfg, calib, seed)` with `mse` / `standardized` / `mahalanobis` / `recon_prob` / `latent_gmm` / `latent_nll`, `fit_latent_gmm`, `gmm_nll`, `save_scores` / `load_scores` |
+| `threshold.py` | threshold strategies, alarm rule `score > threshold`, hour-segmented quantiles | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `hour_segmented_threshold(...) -> (ThresholdResult, scores_val_n, scores_test_n)`, `save_threshold` / `load_threshold` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg, seed) -> dict`, `recall_at_fpr`, `threshold_for_fpr`, `wilson_interval`, `bootstrap_ci`, `per_feature_summary`, `save_metrics` / `load_metrics` |
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs (families `_seed<n>` / `_dseed<n>`) | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir, figure_prefix)` |
 | `diagnose.py` | Phase 7: profile of the frauds a run misses (score percentile, amount, hour, separating raw features), overlap with other runs' missed sets, ensemble upper bounds | `missed_masks`, `legit_percentile`, `group_profile`, `top_features`, `overlap_matrix`, `fusion_bounds`, `diagnose(run, against, processed_dir, root, fpr) -> (summary, arrays)`, `save_diagnostics` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
 | `report.py` | render `report/report.md` from `report/report_template.md`; placeholders resolve to JSON artifact values with arithmetic and `mean/std/min/max` | `render(template, root)`, `render_report(root, template, out)`, `references(template)` |
 | `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines [--suffix]|all` (all with `--synthetic`; `prepare`/`train`/`baselines`/`all` with `--data-seed`), `compare [--runs] [--out] [--figures-dir] [--figure-prefix]`, `report [--template] [--out]`, `diagnose --run [--against …] [--fpr]` | `main(argv)`; paths resolve against the cwd |
-| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `check.sh`: format check + lint + tests | – |
+| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `run_v2_unsupervised.sh`: the Phase 8 candidates with the pre-registered selection; `check.sh`: format check + lint + tests | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
 Adam (lr 1e-3, wd 1e-5), MSE loss, batch 512, ≤ 100 epochs, early stopping patience 10,
 `ReduceLROnPlateau(factor 0.5, patience 5)`. One epoch on the 170 k training rows takes well under
 a second on CPU, so sweeps are cheap.
+
+### Variational autoencoder (Phase 8, `model.kind = "vae"`)
+Same trunk widths as the AE (`input_dim → 20 → 10`), two linear heads for μ_z and log σ_z²
+(`latent_dim` each), decoder trunk `latent_dim → 10 → 20` with two heads for μ_x and log σ_x²
+over the 31 inputs (log-variances clamped to [−6, 3] against variance collapse). Training
+objective = negative ELBO per row (Gaussian NLL of x under the decoder + KL to N(0, I)), one
+reparameterised sample per row drawn from the same seeded generator as the batch permutation,
+so training stays bit-reproducible. `forward` returns the deterministic reconstruction
+μ_x(μ_z(x)), which keeps early stopping ("val-legit MSE"), the residual scores and the
+per-feature analysis identical in meaning across AE and VAE runs; `history.csv` records the
+objective in the `train_mse` column and `train_summary.json` names it (`objective`).
 
 ### Training loop (Phase 2)
 * Only `X_train` (legit) is fitted; model selection uses the MSE on the **legitimate** part of
@@ -99,6 +118,17 @@ a second on CPU, so sweeps are cheap.
 
 ### Scoring
 * `mse` – per-sample mean squared residual (abstract's method, primary).
+* `recon_prob` (Phase 8, VAE only) – reconstruction probability of An & Cho (2015):
+  −log p(x | z) under the Gaussian decoder, averaged over `score.n_samples` = 10 draws
+  z ~ q(z | x) from a generator seeded with the train seed (reproducible scores). Unlike MSE it
+  weights each feature by the decoder's own variance for that row.
+* `latent_nll` (Phase 8) – negative log-likelihood of the encoder code under a full-covariance
+  Gaussian mixture (`score.gmm_components` ∈ {4, 8}) fitted on val-legit codes; a density
+  estimate in the 5-D code space, independent of the residual.
+* `latent_gmm` (Phase 8, DAGMM-lite) – z(log MSE) + z(latent NLL), both standardised with
+  val-legit mean/std stored in `score_calibration.npz` together with the mixture parameters.
+  A sum of standardised terms instead of a rank average, because ranks saturate at 1 for every
+  row beyond the val-legit maximum and would tie the frauds.
 * `standardized` – residuals centred and scaled by the per-feature residual mean/std of
   val-legit, squared, summed (≈ χ² with `d` degrees of freedom on legit rows).
 * `mahalanobis` – squared Mahalanobis distance of the residual vector w.r.t. the mean and
@@ -110,6 +140,16 @@ a second on CPU, so sweeps are cheap.
 ### Threshold
 * `quantile` (primary) – `(1 − target_fpr)` quantile of **val-legit** scores, `target_fpr = 0.009`
   to leave margin so the test FPR lands below 1 %. Observed on `runs/ae_base`: val FPR 0.900 %.
+* `quantile_by_hour` (Phase 8) – the same quantile taken separately for night
+  (`threshold.night_hours`, default 00–06 h) and day validation legit rows; every val and test
+  score is divided by its segment's quantile, the stored scores are therefore
+  segment-normalised and the single threshold is 1.0. Each segment sits at the target FPR, so
+  the global FPR is unchanged while recall is reallocated between the night-time fraud cluster
+  and daytime traffic. The hour is recovered from the scaled `hour_sin` / `hour_cos` inputs
+  through the scaler (`data.hours_from_features`), so the strategy needs
+  `data.time_feature = "sincos"`. The raw per-segment thresholds are kept in
+  `threshold.json["segments"]`; everything downstream (evaluate, compare, report) sees an
+  ordinary run with threshold 1.0.
 * `youden`, `max_f1` – semi-supervised (use val frauds); reported for comparison only. sklearn's
   curve thresholds mean `score >= t`; they are mapped to the project-wide rule `score > t` by
   stepping to the largest score strictly below `t`.
@@ -170,6 +210,17 @@ committed so that readers need no artifacts. A placeholder `{{ expr | fmt }}` co
 `ast` whitelist, no `eval`); `fmt` ∈ `pct0..3`, `pp1`, `f0..4`, `int`, `verdict`, `str`.
 Rendering fails as a whole and lists every unresolved placeholder. The committed report is
 compared against a fresh render in the test suite whenever the real runs are present.
+
+### Unsupervised ceiling (Phase 8)
+Four legit-only candidates, one config each under the pooled protocol: more training data
+(`legit_fractions = [0.8, 0.1, 0.1]`, own `processed_dir`), the VAE with `recon_prob`, the
+latent-density scores (`latent_gmm` k = 4 / 8, `latent_nll`) and the hour-segmented threshold.
+`scripts/run_v2_unsupervised.sh` runs every candidate and the base AE on data seed 0, applies
+the pre-registered rule mechanically (highest pooled recall among candidates with FPR < 1 %),
+re-runs only the selected candidate on data seeds 1–4 next to the base AE, and writes
+`results/v2_unsupervised.md` with the selection stated at the bottom. The seed-0 numbers of
+the other candidates are reported but never re-picked. Ensembles and fusion are not re-run:
+their ceiling was measured in Phase 7 (`diagnostics.json`, ADR 27).
 
 ### Measurement protocol v2 (Phase 7)
 * **Pooled frauds.** `data.fraud_val_fraction = 0` puts every fraud into the test split;
@@ -249,6 +300,9 @@ for everything.
 | 25 | Baseline run names take an explicit `--suffix` (default: the v1 rule) | the second protocol would otherwise overwrite `runs/baseline_*` silently – the same bug the temporal split hit in Phase 5 |
 | 26 | `diagnose` recovers raw rows through `data_report.json` + `idx_test`, not by inverting the scaler | exact amount and hour for every split variant (incl. `time_feature = "drop"` and the synthetic CSV); ≈ 5 s on the real CSV is cheaper than a second artifact |
 | 27 | Ensemble numbers in `diagnostics.json` are oracle upper bounds, not candidate results | union / rank fusion with thresholds set on test legit scores say what a combination *could* reach; a real ensemble would need its own val-legit threshold and a run directory |
+| 28 | The VAE is a `model.kind` on the same trunk, trained by the same loop through `model.loss`, with a deterministic `forward` | one training loop, one checkpoint format, one early-stopping criterion (val-legit MSE of the reconstruction) for both models; the VAE-specific score is a `score.method`, so AE scores can be computed on a VAE run for comparison |
+| 29 | `quantile_by_hour` normalises the stored scores instead of carrying several thresholds | the run-directory contract, `evaluate`, `compare` and the report assume one threshold; dividing by the segment quantile makes the segmented rule a plain `score > 1.0` while the raw thresholds stay in `threshold.json` |
+| 30 | Phase 8 selection is executed by the script, not by a reader of the table | the pre-registered rule (pick on data seed 0, confirm on 1–4) is only credible if nothing is re-picked after seeing the confirmation seeds; encoding it in `run_v2_unsupervised.sh` removes the temptation |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.

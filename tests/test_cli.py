@@ -410,3 +410,66 @@ def test_baselines_suffix_and_data_seed_name_runs(tmp_path, monkeypatch, project
     assert "| Data seed | Test frauds |" in md and "| 42 | 2 | 40 |" in md and "| n/a |" in md
     assert (tmp_path / "figs" / "v2_comparison_recall.png").exists()
     assert not (tmp_path / "figs" / "comparison_recall.png").exists()
+
+
+# --------------------------------------------------------------------------- Phase 8
+
+
+def test_hour_segmented_threshold_end_to_end(tmp_path, monkeypatch, project_root, capsys):
+    _copy_configs(tmp_path, project_root, "v2_unsup_by_hour.toml")
+    monkeypatch.chdir(tmp_path)
+    args = ["--config", "configs/v2_unsup_by_hour.toml", "--run", "runs/h", "--synthetic"]
+    assert main(["all", *args]) == 0
+    out = capsys.readouterr().out
+    assert "hour segments: night 0–6 h" in out and "threshold: 1 " in out
+    import json
+
+    import numpy as np
+
+    t = json.loads((tmp_path / "runs" / "h" / "threshold.json").read_text())
+    assert t["strategy"] == "quantile_by_hour" and t["value"] == 1.0
+    assert t["segments"]["n_val_legit_night"] + t["segments"]["n_val_legit_day"] == 400
+    with np.load(tmp_path / "runs" / "h" / "scores_val.npz") as z:
+        legit = z["scores"][z["y"] == 0]
+    assert abs((legit > 1.0).mean() - t["val_fpr"]) < 1e-12  # stored scores are normalised
+    m = json.loads((tmp_path / "runs" / "h" / "metrics.json").read_text())
+    assert m["threshold_strategy"] == "quantile_by_hour" and m["n_fraud"] == 40
+    # the strategy is also available as a threshold override on an existing run
+    assert main(["threshold", "--run", "runs/h", "--synthetic", "--strategy", "quantile"]) == 0
+    assert json.loads((tmp_path / "runs" / "h" / "threshold.json").read_text())["segments"] is None
+    assert (
+        main(["threshold", "--run", "runs/h", "--synthetic", "--strategy", "quantile_by_hour"]) == 0
+    )
+    assert json.loads((tmp_path / "runs" / "h" / "threshold.json").read_text())["value"] == 1.0
+
+
+def test_vae_and_latent_scores_end_to_end(tmp_path, monkeypatch, project_root, capsys):
+    _copy_configs(tmp_path, project_root, "v2_unsup_vae.toml", "v2_unsup_latent_gmm4.toml")
+    monkeypatch.chdir(tmp_path)
+    import json
+
+    assert main(["prepare", "--config", "configs/v2_unsup_vae.toml", "--synthetic"]) == 0
+    for cfg, run in (("v2_unsup_vae", "v"), ("v2_unsup_latent_gmm4", "g")):
+        c = ["--config", f"configs/{cfg}.toml", "--run", f"runs/{run}", "--synthetic"]
+        assert main(["train", *c, "--epochs", "15"]) == 0
+        assert main(["threshold", "--run", f"runs/{run}", "--synthetic"]) == 0
+        assert main(["evaluate", "--run", f"runs/{run}", "--synthetic"]) == 0
+    sv = json.loads((tmp_path / "runs" / "v" / "train_summary.json").read_text())
+    assert sv["model_kind"] == "vae" and sv["objective"] == "neg_elbo"
+    mv = json.loads((tmp_path / "runs" / "v" / "metrics.json").read_text())
+    assert mv["score_method"] == "recon_prob" and mv["roc_auc"] > 0.9
+    mg = json.loads((tmp_path / "runs" / "g" / "metrics.json").read_text())
+    assert mg["score_method"] == "latent_gmm"
+    import numpy as np
+
+    with np.load(tmp_path / "runs" / "g" / "score_calibration.npz") as z:
+        assert z["gmm_weights"].shape == (4,)
+    # latent_nll re-uses the same calibration path through a CLI override
+    assert main(["threshold", "--run", "runs/g", "--synthetic", "--method", "latent_nll"]) == 0
+    assert (
+        json.loads((tmp_path / "runs" / "g" / "threshold.json").read_text())["score_method"]
+        == "latent_nll"
+    )
+    capsys.readouterr()
+    rc = main(["compare", "--runs", "runs/v", "runs/g", "--out", "results/c.md"])
+    assert rc == 0 and "VAE 31-20-10-5" in capsys.readouterr().out
