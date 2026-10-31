@@ -112,3 +112,75 @@ def test_trained_model_separates_synthetic_frauds(method, tmp_path, synthetic_sp
     res = choose_threshold(s, y, ThresholdConfig(strategy="quantile", target_fpr=0.05), method)
     assert res.val_fpr <= 0.05 + 1e-9
     assert res.val_recall is not None and res.val_recall >= 0.5
+
+
+# --------------------------------------------------------------------------- Phase 8 scores
+
+
+def test_gmm_nll_matches_sklearn():
+    from sklearn.mixture import GaussianMixture
+
+    Z = np.random.default_rng(0).normal(size=(500, 3))
+    Z[:250] += 4
+    gmm = GaussianMixture(2, covariance_type="full", random_state=0).fit(Z)
+    ours = sc.gmm_nll(Z, gmm.weights_, gmm.means_, gmm.covariances_)
+    np.testing.assert_allclose(ours, -gmm.score_samples(Z), rtol=1e-8, atol=1e-8)
+    w, m, c = sc.fit_latent_gmm(Z, 2, seed=0)
+    assert w.shape == (2,) and m.shape == (2, 3) and c.shape == (2, 3, 3)
+
+
+def test_latent_calibration_scores_and_round_trip(tmp_path, model, X):
+    cfg = ScoreConfig(method="latent_gmm", gmm_components=2)
+    plain = sc.calibrate(model, X)
+    assert plain.gmm_weights is None
+    with pytest.raises(ValueError):
+        sc.score(model, X, cfg, plain)
+    calib = sc.calibrate(model, X, score_cfg=cfg, seed=0)
+    assert calib.gmm_weights is not None and calib.gmm_means.shape == (2, 5)
+    s = sc.score(model, X, cfg, calib)
+    assert s.shape == (300,) and abs(s.mean()) < 1e-6  # sum of two standardised terms
+    nll = sc.score(model, X, ScoreConfig(method="latent_nll", gmm_components=2), calib)
+    np.testing.assert_allclose(
+        nll, sc.gmm_nll(sc.codes(model, X), calib.gmm_weights, calib.gmm_means, calib.gmm_covs)
+    )
+    assert abs(((nll - calib.latent_nll_stats[0]) / calib.latent_nll_stats[1]).mean()) < 1e-6
+    sc.save_calibration(calib, tmp_path)
+    back = sc.load_calibration(tmp_path)
+    for k, v in calib.__dict__.items():
+        np.testing.assert_array_equal(getattr(back, k), v)
+    np.testing.assert_array_equal(sc.score(model, X, cfg, back), s)
+
+
+def test_recon_prob_requires_vae_and_is_seeded(model, X):
+    with pytest.raises(ValueError):
+        sc.score(model, X, ScoreConfig(method="recon_prob"))
+    torch.manual_seed(0)
+    vae = build_model(31, ModelConfig(kind="vae"))
+    cfg = ScoreConfig(method="recon_prob", n_samples=3)
+    a, b, c = (sc.score(vae, X, cfg, seed=s) for s in (1, 1, 2))
+    assert a.shape == (300,) and np.array_equal(a, b) and not np.array_equal(a, c)
+    assert np.isfinite(a).all()
+    # residual-based methods still work on the VAE (deterministic reconstruction)
+    assert sc.score(vae, X, ScoreConfig(method="mse")).shape == (300,)
+    assert sc.codes(vae, X).shape == (300, 5)
+
+
+def test_trained_vae_separates_synthetic_frauds(tmp_path, synthetic_splits):
+    from sklearn.metrics import roc_auc_score
+
+    from fraud_ae.config import Config, TrainConfig
+    from fraud_ae.train import train
+
+    sp = synthetic_splits
+    cfg = Config(model=ModelConfig(kind="vae"), train=TrainConfig(epochs=25, patience=10))
+    vae = train(cfg, sp.X_train, sp.X_val[sp.y_val == 0], tmp_path / "vae")
+    s = sc.score(vae, sp.X_test, ScoreConfig(method="recon_prob", n_samples=5), seed=0)
+    assert roc_auc_score(sp.y_test, s) > 0.9
+    import json
+
+    summary = json.loads((tmp_path / "vae" / "train_summary.json").read_text())
+    assert summary["model_kind"] == "vae" and summary["objective"] == "neg_elbo"
+    from fraud_ae.model import VariationalAutoencoder
+    from fraud_ae.train import load_model
+
+    assert isinstance(load_model(tmp_path / "vae"), VariationalAutoencoder)

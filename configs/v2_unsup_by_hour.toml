@@ -1,0 +1,44 @@
+# Roadmap v2 Phase 8 – unsupervised ceiling, pooled protocol (all frauds in test, val = legit only).
+# Hour-segmented thresholds: separate 0.9 % legit quantiles for night (00–06 h) and day, same global FPR.
+
+[data]
+zip_path = "dataset.zip"
+raw_csv = "data/raw/creditcard.csv"
+processed_dir = "data/processed_pooled"
+expected_sha256 = "76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89"  # creditcard.csv (Phase 1)
+drop_duplicates = true
+log_amount = true
+time_feature = "sincos"       # "sincos" (hour-of-day encoding) | "drop"
+legit_fractions = [0.6, 0.2, 0.2]   # train / val / test share of legitimate rows
+fraud_val_fraction = 0.0      # pooled protocol: every fraud is a test fraud; val = legit only
+seed = 42
+
+[model]
+hidden_dims = [20, 10]        # encoder widths; decoder is mirrored
+latent_dim = 5
+activation = "elu"            # "elu" | "relu" | "tanh"
+batch_norm = false            # kept for ablation only (ADR 6)
+dropout = 0.0
+
+[train]
+epochs = 100
+batch_size = 512
+lr = 1e-3
+weight_decay = 1e-5
+patience = 10                 # early stopping on val-legit MSE
+seed = 42
+num_threads = 8
+
+[score]
+method = "mse"                # "mse" | "standardized" | "mahalanobis"
+
+[threshold]
+strategy = "quantile_by_hour" # per-segment legit quantiles, scores stored segment-normalised
+night_hours = [0, 6]
+target_fpr = 0.009            # margin below the 1 % criterion (ADR 2)
+
+[eval]
+fpr_grid = [0.001, 0.005, 0.01, 0.02]
+target_recall = 0.85
+target_fpr = 0.01
+bootstrap_samples = 1000

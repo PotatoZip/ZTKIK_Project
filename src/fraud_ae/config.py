@@ -13,9 +13,14 @@ from typing import Any, Literal
 
 TimeFeature = Literal["sincos", "drop"]
 Activation = Literal["elu", "relu", "tanh"]
-ScoreMethod = Literal["mse", "standardized", "mahalanobis"]
-ThresholdStrategy = Literal["quantile", "youden", "max_f1"]
+ScoreMethod = Literal[
+    "mse", "standardized", "mahalanobis", "recon_prob", "latent_gmm", "latent_nll"
+]
+ThresholdStrategy = Literal["quantile", "youden", "max_f1", "quantile_by_hour"]
 SplitStrategy = Literal["random", "temporal"]
+ModelKind = Literal["ae", "vae"]
+SCORE_METHODS = ("mse", "standardized", "mahalanobis", "recon_prob", "latent_gmm", "latent_nll")
+THRESHOLD_STRATEGIES = ("quantile", "youden", "max_f1", "quantile_by_hour")
 
 
 class ConfigError(ValueError):
@@ -49,6 +54,7 @@ class ModelConfig:
     activation: Activation = "elu"
     batch_norm: bool = False
     dropout: float = 0.0
+    kind: ModelKind = "ae"  # "vae": variational AE with a Gaussian decoder (Roadmap v2, Phase 8)
 
 
 @dataclass(frozen=True)
@@ -65,12 +71,15 @@ class TrainConfig:
 @dataclass(frozen=True)
 class ScoreConfig:
     method: ScoreMethod = "mse"
+    n_samples: int = 10  # recon_prob: Monte-Carlo samples of z per row (An & Cho 2015)
+    gmm_components: int = 4  # latent_gmm / latent_nll: mixture components on val-legit codes
 
 
 @dataclass(frozen=True)
 class ThresholdConfig:
     strategy: ThresholdStrategy = "quantile"
     target_fpr: float = 0.009
+    night_hours: tuple[float, float] = (0.0, 6.0)  # quantile_by_hour: [start, end) of "night"
 
 
 @dataclass(frozen=True)
@@ -138,14 +147,26 @@ def validate(cfg: Config) -> None:
         raise ConfigError("model.hidden_dims[0] must not exceed the number of input features")
     if m.activation not in ("elu", "relu", "tanh"):
         raise ConfigError(f"model.activation invalid: {m.activation!r}")
+    if m.kind not in ("ae", "vae"):
+        raise ConfigError(f"model.kind invalid: {m.kind!r}")
     if not 0.0 <= m.dropout < 1.0:
         raise ConfigError("model.dropout must be in [0, 1)")
     if t.epochs <= 0 or t.batch_size <= 0 or t.patience <= 0 or t.lr <= 0:
         raise ConfigError("train.epochs, batch_size, patience and lr must be positive")
-    if cfg.score.method not in ("mse", "standardized", "mahalanobis"):
+    if cfg.score.method not in SCORE_METHODS:
         raise ConfigError(f"score.method invalid: {cfg.score.method!r}")
-    if th.strategy not in ("quantile", "youden", "max_f1"):
+    if cfg.score.method == "recon_prob" and m.kind != "vae":
+        raise ConfigError("score.method = 'recon_prob' needs model.kind = 'vae'")
+    if cfg.score.n_samples <= 0 or cfg.score.gmm_components <= 0:
+        raise ConfigError("score.n_samples and score.gmm_components must be positive")
+    if th.strategy not in THRESHOLD_STRATEGIES:
         raise ConfigError(f"threshold.strategy invalid: {th.strategy!r}")
+    if th.strategy == "quantile_by_hour" and d.time_feature != "sincos":
+        raise ConfigError(
+            "threshold.strategy = 'quantile_by_hour' needs data.time_feature = 'sincos'"
+        )
+    if len(th.night_hours) != 2 or not 0.0 <= th.night_hours[0] < th.night_hours[1] <= 24.0:
+        raise ConfigError("threshold.night_hours must be [start, end) within [0, 24]")
     if not 0.0 < th.target_fpr < 1.0:
         raise ConfigError("threshold.target_fpr must be in (0, 1)")
     if not 0.0 < ev.target_fpr < 1.0 or not 0.0 < ev.target_recall <= 1.0:

@@ -6,11 +6,51 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned (Roadmap v2 in `ROADMAP.md`): Phase 8 unsupervised ceiling (VAE, latent density,
-hour-segmented thresholds, more training data) under the pooled protocol; Phase 9 fully
-supervised classifiers (logistic regression, gradient boosting, MLP), weakly-supervised AE and
-hybrid stacking with 5-fold CV over frauds and a few-label curve; Phase 10 rolling threshold,
-variance, evasion probe; Phase 11 report v2.
+Planned (Roadmap v2 in `ROADMAP.md`): Phase 9 fully supervised classifiers (logistic
+regression, gradient boosting, MLP), weakly-supervised AE and hybrid stacking with 5-fold CV
+over frauds and a few-label curve; Phase 10 rolling threshold, variance, evasion probe;
+Phase 11 report v2.
+
+## [1.2.0] – 2026-10-31 – Roadmap v2 Phase 8: unsupervised ceiling
+
+### Added
+- `model.kind = "vae"`: `VariationalAutoencoder` (Gaussian encoder/decoder heads on the AE
+  trunk, log-variances clamped, negative-ELBO objective, deterministic `forward`,
+  `reconstruction_nll`); `Autoencoder.loss`; the training loop calls `model.loss(xb, gen)` and
+  records `model_kind` / `objective` in `train_summary.json`.
+- Score methods `recon_prob` (reconstruction probability, `score.n_samples`, seeded draws),
+  `latent_nll` (GMM on val-legit encoder codes, `score.gmm_components`) and `latent_gmm`
+  (z(log MSE) + z(latent NLL)); `scoring.codes`, `fit_latent_gmm`, `gmm_nll`,
+  `reconstruction_probability`; `ScoreCalibration` gains the mixture parameters and the
+  standardisation statistics (saved only when present).
+- Threshold strategy `quantile_by_hour` (`threshold.night_hours`): per-segment legit quantiles,
+  segment-normalised scores, common threshold 1.0, raw thresholds in `threshold.json["segments"]`;
+  `threshold.hour_segmented_threshold`, `is_night`, `normalize_by_segment`;
+  `data.hours_from_features` (hour of day from the scaled sin/cos inputs).
+- Configs `v2_unsup_{train80,vae,latent_gmm4,latent_gmm8,latent_nll,by_hour}.toml`;
+  `scripts/run_v2_unsupervised.sh` (candidates on data seed 0, mechanical pre-registered
+  selection, confirmation on data seeds 1–4, table); `results/v2_unsupervised.md` (16 runs);
+  `report/figures/v2_unsup_{comparison_recall,seed_variance}.png`.
+- Config validation: `recon_prob` needs `kind = "vae"`, `quantile_by_hour` needs the hour
+  features, positive `n_samples` / `gmm_components`, `night_hours` within [0, 24].
+- Tests: VAE shapes / seeded NLL / loss interface, `gmm_nll` ≡ sklearn, latent calibration and
+  round trip, `recon_prob` seeding, trained VAE separates synthetic frauds, hour-segmented
+  threshold per-segment FPR and JSON round trip, `hours_from_features`, invalid config combos,
+  two CLI end-to-end tests (by-hour, VAE + latent); suite 122 → 138.
+
+### Changed
+- `fraud-ae threshold --method / --strategy` accept the new values; `compare` labels VAE runs
+  and `+hour` thresholds; `history.csv` `train_mse` holds the training objective (MSE or
+  −ELBO), `val_legit_mse` stays the MSE of the deterministic reconstruction.
+- Version 1.2.0; ARCHITECTURE: VAE, scoring and threshold sections, "Unsupervised ceiling"
+  section, ADRs 28–30; ROADMAP: Phase 8 ✅ with outcome; README: Phase 8 section.
+
+### Results (real data, pooled protocol, 473 test frauds)
+- Data seed 0: `train80` 81.0 % at FPR 0.76 %, `by_hour` 79.9 %, `vae` 79.3 %, `latent_gmm8` /
+  `latent_gmm4` 55.0 % / 51.6 %, `latent_nll` 9.9 %; base AE 79.7 %. Selected `train80`;
+  confirmation on seeds 1–4: 82.5 / 80.3 / 80.3 / 81.2 % vs base 79.7 / 80.5 / 82.0 / 81.8 % →
+  81.1 % ± 0.9 % vs 80.8 % ± 1.1 % (paired +0.3 pp). No run meets the criterion; gate G8 →
+  Phase 9 with the plain-MSE AE.
 
 ## [1.1.0] – 2026-10-29 – Roadmap v2 Phase 7: measurement protocol and diagnosis (milestone M4)
 

@@ -12,7 +12,14 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import Config, ConfigError, load_config, validate
+from .config import (
+    SCORE_METHODS,
+    THRESHOLD_STRATEGIES,
+    Config,
+    ConfigError,
+    load_config,
+    validate,
+)
 from .data import DataError
 
 SYNTHETIC_CSV = "data/raw/synthetic.csv"
@@ -79,11 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("threshold", help="Phase 3: score val/test and choose the threshold")
     _add_run(p)
-    p.add_argument("--strategy", choices=["quantile", "youden", "max_f1"], help="override")
+    p.add_argument("--strategy", choices=list(THRESHOLD_STRATEGIES), help="override")
     p.add_argument("--target-fpr", type=float, help="override threshold.target_fpr")
-    p.add_argument(
-        "--method", choices=["mse", "standardized", "mahalanobis"], help="override score.method"
-    )
+    p.add_argument("--method", choices=list(SCORE_METHODS), help="override score.method")
     p.add_argument(
         "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
     )
@@ -255,10 +260,10 @@ def cmd_threshold(
     The config comes from the run's own ``config.toml`` snapshot so that scoring always matches
     the model that was trained; CLI flags override single fields.
     """
-    from .data import load_splits
+    from .data import SCALER_FILE, hours_from_features, load_splits
     from .plots import score_histogram
     from .scoring import calibrate, save_calibration, save_scores, score
-    from .threshold import choose_threshold, save_threshold
+    from .threshold import choose_threshold, hour_segmented_threshold, save_threshold
     from .train import CONFIG_FILE, load_model
 
     cfg = load_config(run / CONFIG_FILE)
@@ -272,16 +277,32 @@ def cmd_threshold(
     cfg = dataclasses.replace(cfg, threshold=th)
     validate(cfg)
 
-    splits = load_splits(_processed_dir(cfg, synthetic))
+    processed = _processed_dir(cfg, synthetic)
+    splits = load_splits(processed)
     model = load_model(run)
-    calib = calibrate(model, splits.X_val[splits.y_val == 0])
+    calib = calibrate(
+        model, splits.X_val[splits.y_val == 0], score_cfg=cfg.score, seed=cfg.train.seed
+    )
     save_calibration(calib, run)
-    scores_val = score(model, splits.X_val, cfg.score, calib)
-    scores_test = score(model, splits.X_test, cfg.score, calib)
+    scores_val = score(model, splits.X_val, cfg.score, calib, seed=cfg.train.seed)
+    scores_test = score(model, splits.X_test, cfg.score, calib, seed=cfg.train.seed)
+    if cfg.threshold.strategy == "quantile_by_hour":
+        import joblib
+
+        scaler = joblib.load(processed / SCALER_FILE)
+        result, scores_val, scores_test = hour_segmented_threshold(
+            scores_val,
+            splits.y_val,
+            hours_from_features(splits.X_val, splits.feature_names, scaler),
+            scores_test,
+            hours_from_features(splits.X_test, splits.feature_names, scaler),
+            cfg.threshold,
+            cfg.score.method,
+        )
+    else:
+        result = choose_threshold(scores_val, splits.y_val, cfg.threshold, cfg.score.method)
     save_scores(run, "val", scores_val, splits.y_val)
     save_scores(run, "test", scores_test, splits.y_test)
-
-    result = choose_threshold(scores_val, splits.y_val, cfg.threshold, cfg.score.method)
     save_threshold(result, run)
     score_histogram(
         scores_val,
@@ -299,6 +320,14 @@ def cmd_threshold(
         f"threshold: {result.value:.6g}  val FPR: {result.val_fpr:.3%} "
         f"({result.n_val_legit:,} legit)  val recall: {rec} ({result.n_val_fraud} frauds)"
     )
+    if result.segments:
+        sg = result.segments
+        print(
+            f"hour segments: night {sg['night_hours'][0]:g}–{sg['night_hours'][1]:g} h threshold "
+            f"{sg['night']:.6g} (val FPR {sg['val_fpr_night']:.3%}, {sg['n_val_legit_night']:,} "
+            f"legit), day threshold {sg['day']:.6g} (val FPR {sg['val_fpr_day']:.3%}); scores "
+            "stored segment-normalised, common threshold 1.0"
+        )
     print(f"artifacts: {run}/{{scores_val.npz, scores_test.npz, threshold.json, figures/}}")
     return 0
 

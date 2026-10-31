@@ -7,7 +7,9 @@ Run-directory contract (``runs/<name>/``)::
 
     config.toml          verbatim snapshot of the config file the run was started from
     model.pt             best checkpoint: state_dict + input_dim + model config + best epoch
-    history.csv          epoch, train_mse, val_legit_mse, lr, seconds
+    history.csv          epoch, train_mse (training objective: MSE, or −ELBO for the VAE),
+                         val_legit_mse (always the MSE of the deterministic reconstruction),
+                         lr, seconds
     train_summary.json   epochs run, best epoch / val MSE, parameter count, wall time, seed
     figures/training_curves.png
 """
@@ -127,7 +129,6 @@ def train(cfg: Config, X_train: np.ndarray, X_val_legit: np.ndarray, run_dir: Pa
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=max(1, tc.patience // 2)
     )
-    loss_fn = nn.MSELoss()
     stopper = EarlyStopping(tc.patience)
     gen = torch.Generator().manual_seed(tc.seed)
     best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -142,7 +143,7 @@ def train(cfg: Config, X_train: np.ndarray, X_val_legit: np.ndarray, run_dir: Pa
         for start in range(0, n, tc.batch_size):
             xb = Xtr[perm[start : start + tc.batch_size]]
             optimizer.zero_grad(set_to_none=True)
-            loss = loss_fn(model(xb), xb)
+            loss = model.loss(xb, gen)  # MSE for the AE, negative ELBO for the VAE
             loss.backward()
             optimizer.step()
             total += loss.item() * len(xb)
@@ -197,6 +198,8 @@ def train(cfg: Config, X_train: np.ndarray, X_val_legit: np.ndarray, run_dir: Pa
         "n_parameters": count_parameters(model),
         "seed": tc.seed,
         "wall_seconds": wall,
+        "model_kind": cfg.model.kind,
+        "objective": "neg_elbo" if cfg.model.kind == "vae" else "mse",
     }
     (run_dir / SUMMARY_FILE).write_text(json.dumps(summary, indent=2))
 

@@ -259,3 +259,22 @@ def test_prepare_temporal_reports_dropped_frauds(synthetic_project):
     w = report["time_windows"]
     assert w["train"][1] <= w["val"][0] and w["val"][1] <= w["test"][0]
     assert splits.y_val.sum() == report["splits"]["val"]["fraud"]
+
+
+# ----------------------------------------------------------------------------- Phase 8
+
+
+def test_hours_from_features_recovers_hour_of_day(synthetic_df):
+    cfg = DataConfig()
+    X = data.engineer_features(synthetic_df, cfg)
+    scaler = data.fit_scaler(X.to_numpy())
+    Xs = scaler.transform(X.to_numpy())
+    hours = data.hours_from_features(Xs, tuple(X.columns), scaler)
+    expected = data.hour_of_day(synthetic_df["Time"])
+    diff = np.abs(hours - expected)
+    np.testing.assert_allclose(np.minimum(diff, 24 - diff), 0.0, atol=1e-6)
+    with pytest.raises(data.DataError):
+        X29 = data.engineer_features(synthetic_df, DataConfig(time_feature="drop"))
+        data.hours_from_features(
+            X29.to_numpy(), tuple(X29.columns), data.fit_scaler(X29.to_numpy())
+        )

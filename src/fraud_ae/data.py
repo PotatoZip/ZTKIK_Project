@@ -209,6 +209,21 @@ def temporal_split_indices(
     )
 
 
+def hours_from_features(
+    X: np.ndarray, feature_names: tuple[str, ...], scaler: StandardScaler
+) -> np.ndarray:
+    """Hour of day in ``[0, 24)`` recovered from the scaled ``hour_sin`` / ``hour_cos`` columns
+    (Phase 8 hour-segmented thresholds). Raises :class:`DataError` without the hour features."""
+    names = list(feature_names)
+    if "hour_sin" not in names or "hour_cos" not in names:
+        raise DataError("hour-of-day features are not present (data.time_feature = 'drop')")
+    i, j = names.index("hour_sin"), names.index("hour_cos")
+    X = np.asarray(X, dtype=np.float64)
+    s = X[:, i] * scaler.scale_[i] + scaler.mean_[i]
+    c = X[:, j] * scaler.scale_[j] + scaler.mean_[j]
+    return (np.arctan2(s, c) / (2 * np.pi) * 24.0) % 24.0
+
+
 def fit_scaler(X_train: np.ndarray) -> StandardScaler:
     """Fit a ``StandardScaler`` on the training (legit-only) matrix."""
     return StandardScaler().fit(np.asarray(X_train, dtype=float))

@@ -197,7 +197,8 @@ def _describe(run: Path) -> dict[str, Any]:
             str(x)
             for x in (summary.get("input_dim", "?"), *cfg.model.hidden_dims, cfg.model.latent_dim)
         )
-        model = f"AE {dims}" + (" +BN" if cfg.model.batch_norm else "")
+        kind = "VAE" if cfg.model.kind == "vae" else "AE"
+        model = f"{kind} {dims}" + (" +BN" if cfg.model.batch_norm else "")
     else:
         model = "?"
     at = m["at_threshold"]
@@ -215,7 +216,8 @@ def _describe(run: Path) -> dict[str, Any]:
         "model": model,
         "split": cfg.data.split if cfg is not None else "?",
         "features": summary.get("input_dim", "?"),
-        "score": m.get("score_method", th.score_method),
+        "score": m.get("score_method", th.score_method)
+        + ("+hour" if th.strategy == "quantile_by_hour" else ""),
         "seed": summary.get("seed", "?"),
         "data_seed": cfg.data.seed if cfg is not None else "?",
         "val_mse": summary.get("best_val_legit_mse"),

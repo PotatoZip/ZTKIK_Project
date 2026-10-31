@@ -3,7 +3,10 @@
 Primary strategy ``quantile`` uses *legitimate validation scores only*: the threshold is the
 ``1 - target_fpr`` quantile, so the FPR criterion holds by construction and no fraud label is
 touched. ``youden`` / ``max_f1`` are semi-supervised alternatives that use val fraud labels and
-are reported for comparison only.
+are reported for comparison only. ``quantile_by_hour`` (Phase 8) takes the legit quantile per
+hour segment (night / day) and divides every score by its segment's quantile, so the stored
+scores are segment-normalised and the single threshold is 1.0; the global val FPR equals the
+target because each segment is at the target.
 
 Alarm rule everywhere in the project: ``score > threshold``.
 """
@@ -32,6 +35,7 @@ class ThresholdResult:
     score_method: str = "mse"
     n_val_legit: int = 0
     n_val_fraud: int = 0
+    segments: dict | None = None  # quantile_by_hour: per-segment thresholds in raw score units
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -101,6 +105,10 @@ def choose_threshold(
 
     if cfg.strategy == "quantile":
         value = quantile_threshold(legit, cfg.target_fpr)
+    elif cfg.strategy == "quantile_by_hour":
+        raise ValueError(
+            "quantile_by_hour needs the hour of each row – use hour_segmented_threshold"
+        )
     elif cfg.strategy == "youden":
         value = youden_threshold(scores_val, y_val)
     elif cfg.strategy == "max_f1":
@@ -118,6 +126,63 @@ def choose_threshold(
         n_val_legit=int(len(legit)),
         n_val_fraud=int(len(fraud)),
     )
+
+
+def is_night(hours: np.ndarray, night_hours: tuple[float, float]) -> np.ndarray:
+    h = np.asarray(hours, dtype=np.float64)
+    return (h >= night_hours[0]) & (h < night_hours[1])
+
+
+def normalize_by_segment(scores: np.ndarray, night: np.ndarray, q_night: float, q_day: float):
+    """Divide each score by its segment's legit quantile; the common threshold becomes 1.0."""
+    scores = np.asarray(scores, dtype=np.float64)
+    return np.where(np.asarray(night, bool), scores / q_night, scores / q_day)
+
+
+def hour_segmented_threshold(
+    scores_val: np.ndarray,
+    y_val: np.ndarray,
+    hours_val: np.ndarray,
+    scores_test: np.ndarray,
+    hours_test: np.ndarray,
+    cfg: ThresholdConfig,
+    score_method: str = "mse",
+) -> tuple[ThresholdResult, np.ndarray, np.ndarray]:
+    """Phase 8 ``quantile_by_hour``: the ``1 − target_fpr`` legit quantile is taken separately for
+    night (``cfg.night_hours``) and day validation rows; scores of both splits are divided by
+    their segment's quantile. Returns ``(result, scores_val_normalised, scores_test_normalised)``
+    with ``result.value == 1.0`` and the raw per-segment thresholds in ``result.segments``."""
+    scores_val, y_val = np.asarray(scores_val, dtype=np.float64), np.asarray(y_val)
+    night_val, night_test = (
+        is_night(hours_val, cfg.night_hours),
+        is_night(hours_test, cfg.night_hours),
+    )
+    legit = y_val == 0
+    q_night = quantile_threshold(scores_val[legit & night_val], cfg.target_fpr)
+    q_day = quantile_threshold(scores_val[legit & ~night_val], cfg.target_fpr)
+    sv = normalize_by_segment(scores_val, night_val, q_night, q_day)
+    st = normalize_by_segment(scores_test, night_test, q_night, q_day)
+    result = ThresholdResult(
+        strategy="quantile_by_hour",
+        target_fpr=cfg.target_fpr,
+        value=1.0,
+        val_fpr=fpr_at(sv[legit], 1.0),
+        val_recall=recall_at(sv[y_val == 1], 1.0),
+        score_method=score_method,
+        n_val_legit=int(legit.sum()),
+        n_val_fraud=int((y_val == 1).sum()),
+        segments={
+            "night_hours": [float(cfg.night_hours[0]), float(cfg.night_hours[1])],
+            "night": q_night,
+            "day": q_day,
+            "n_val_legit_night": int((legit & night_val).sum()),
+            "n_val_legit_day": int((legit & ~night_val).sum()),
+            "val_fpr_night": fpr_at(sv[legit & night_val], 1.0),
+            "val_fpr_day": fpr_at(sv[legit & ~night_val], 1.0),
+            "test_rows_night": int(night_test.sum()),
+        },
+    )
+    return result, sv, st
 
 
 def save_threshold(result: ThresholdResult, run_dir: Path) -> Path:

@@ -50,6 +50,14 @@ uv run fraud-ae baselines --config configs/v2_pooled.toml --suffix _pooled      
 uv run fraud-ae diagnose  --run runs/ae_pooled --against runs/baseline_pca_k15_pooled runs/baseline_iforest_pooled   # 7. missed-fraud profile + bounds
 uv run fraud-ae compare   --runs runs/ae_pooled runs/ae_pooled_dseed0 --out results/v2_protocol.md --figure-prefix v2_protocol_
 scripts/run_v2_protocol.sh                                                # all of the above: 6 splits, 6 AE runs, baselines, diagnosis, table (≈ 5 min)
+
+# Roadmap v2, Phase 8 – unsupervised ceiling (legit-only candidates, pooled protocol)
+uv run fraud-ae all --config configs/v2_unsup_vae.toml        --run runs/ae_vae_dseed0        --data-seed 0   # VAE, score = reconstruction probability
+uv run fraud-ae all --config configs/v2_unsup_latent_gmm4.toml --run runs/ae_latent_gmm4_dseed0 --data-seed 0   # z(log MSE) + z(latent GMM NLL)
+uv run fraud-ae all --config configs/v2_unsup_by_hour.toml    --run runs/ae_by_hour_dseed0    --data-seed 0   # night/day legit quantiles
+uv run fraud-ae all --config configs/v2_unsup_train80.toml    --run runs/ae_train80_dseed0    --data-seed 0   # legit 80/10/10
+uv run fraud-ae threshold --run runs/ae_pooled --strategy quantile_by_hour                    # strategies/methods are also overrides
+scripts/run_v2_unsupervised.sh                                            # all candidates on data seed 0, pre-registered pick, confirmation on seeds 1–4 (≈ 8 min)
 ```
 
 **Reproduce the whole study from a clean checkout** (CPU, ≈ 10 min): `uv sync --group dev`,
@@ -76,13 +84,14 @@ for the first time by `evaluate`.
 
 ```
 configs/        TOML experiments (base + ablations: latent size, no time feature, score method, BatchNorm, temporal split;
-                v2_pooled / v2_literature: Roadmap v2 measurement protocol)
-scripts/        run_ablations.sh (every v1 run, baselines, comparison, report), run_v2_protocol.sh (Phase 7), check.sh
+                v2_pooled / v2_literature: Roadmap v2 measurement protocol; v2_unsup_*: Phase 8 candidates)
+scripts/        run_ablations.sh (every v1 run, baselines, comparison, report), run_v2_protocol.sh (Phase 7),
+                run_v2_unsupervised.sh (Phase 8), check.sh
 src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, diagnose, plots, report, cli
 tests/          pytest suite on the synthetic creditcard-like frame from fraud_ae.synthetic
 data/           raw/ (extracted CSV) and processed/ (splits, scaler, data_report.json) – git-ignored
 runs/           one directory per experiment – git-ignored
-results/        comparison.md, ablations_phase4.md, v2_protocol.md – generated from runs/*/metrics.json (tracked)
+results/        comparison.md, ablations_phase4.md, v2_protocol.md, v2_unsupervised.md – generated from runs/*/metrics.json (tracked)
 report/         report.md (rendered), report_template.md (source of truth), CHANGELOG.md, prompt_log.md, figures/
 ```
 
@@ -91,13 +100,16 @@ report/         report.md (rendered), report_template.md (source of truth), CHAN
 v1 (Phases 0–6, milestone M3, submission package) is done; the report in `report/report.md`
 is that deliverable. **Roadmap v2** (Phases 7–11: pooled-fraud protocol, unsupervised ceiling,
 fully supervised classifiers alongside a weakly-supervised AE and hybrid, robustness, report
-v2) – the plan for reaching the 85 % / 1 % criterion – is in `ROADMAP.md`; **Phase 7 is done**
-(milestone M4, version 1.1.0): the same autoencoder measured on all 473 frauds reaches
-**80.8 %** [77.0 %, 84.1 %] at FPR 0.955 % (80.5 % ± 1.0 % over five legit splits), and the
-diagnosis confirms that the 91 missed frauds are indistinguishable from legitimate rows by
-reconstruction error – gate G7 sends the work to Phase 8. The sections below are the per-phase
-working notes; outcomes are in `ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1
-report is unchanged until Phase 11 (report v2).
+v2) – the plan for reaching the 85 % / 1 % criterion – is in `ROADMAP.md`. **Phase 7** (milestone
+M4): the same autoencoder measured on all 473 frauds reaches **80.8 %** [77.0 %, 84.1 %] at FPR
+0.955 % (80.5 % ± 1.0 % over five legit splits), and the diagnosis confirms that the 91 missed
+frauds are indistinguishable from legitimate rows by reconstruction error. **Phase 8** (version
+1.2.0): the legit-only ceiling is proven – more training data, a VAE with reconstruction
+probability, latent-density scores and hour-segmented thresholds all stay at ≈ 81–82 % at 1 % FPR
+(best five-split mean 81.1 % ± 0.9 %, best single split 82.5 %); gate G8 sends the work to
+Phase 9 (labels inside the model). The sections below are the per-phase working notes; outcomes
+are in `ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1 report is unchanged until
+Phase 11 (report v2).
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -280,3 +292,39 @@ oracle 1 % FPR); the ranking itself is as good as on the random split. Intervals
   regenerated by the script in ≈ 5 min. 122 tests.
 * **Gate G7:** pooled `meets_target` is false and no unsupervised combination exceeds ≈ 82 % →
   Phase 8 (unsupervised ceiling) is next, measured under the pooled protocol.
+
+### Phase 8 – unsupervised ceiling (`configs/v2_unsup_*.toml`, `scripts/run_v2_unsupervised.sh`)
+
+Four legit-only ideas, each one config under the pooled protocol, selected by a pre-registered
+rule that the script applies mechanically: every candidate runs on data seed 0, the best one
+(highest pooled recall with FPR < 1 %) is re-run on data seeds 1–4 next to the base AE, nothing
+is re-picked afterwards. Table: `results/v2_unsupervised.md`; figures
+`report/figures/v2_unsup_{comparison_recall,seed_variance}.png`.
+
+| Candidate (data seed 0; base AE 79.7 %) | What changes | Test recall [95 %] at FPR |
+|---|---|---|
+| `train80` | legit split 80/10/10 → 226 k training rows | **81.0 %** [77.2, 84.3] at 0.76 % |
+| `by_hour` | `threshold.strategy = "quantile_by_hour"`: separate 0.9 % legit quantiles for 00–06 h and day, scores stored segment-normalised, threshold 1.0 | 79.9 % at 0.94 % |
+| `vae` | `model.kind = "vae"` (Gaussian encoder/decoder heads, −ELBO objective), `score.method = "recon_prob"` (−log p(x\|z) over 10 draws, An & Cho 2015) | 79.3 % at 0.93 % |
+| `latent_gmm8` / `latent_gmm4` | `score.method = "latent_gmm"`: z(log MSE) + z(NLL of the code under a GMM fitted on val-legit codes) | 55.0 % / 51.6 % |
+| `latent_nll` | code density alone | 9.9 % |
+
+* **Confirmation.** `train80` on seeds 1–4: 82.5 / 80.3 / 80.3 / 81.2 % vs base 79.7 / 80.5 /
+  82.0 / 81.8 % → five-split means **81.1 % ± 0.9 %** vs **80.8 % ± 1.1 %**, paired difference
+  +0.3 pp with sign changes across seeds. Best single run 82.5 % (390 of 473, 403 needed).
+  Precision of the 80/10/10 rows (≈ 60 %) is not comparable with 60/20/20 rows (≈ 42 %): the
+  test legit set is half the size; recall at fixed FPR is the like-for-like number.
+* **What the negative results say.** The code of the 5-D bottleneck carries no usable density
+  signal for this fraud population (latent NLL ranks frauds barely above chance at low FPR and
+  costs 25–28 pp when added to the residual); the VAE's per-feature variance down-weights
+  exactly the features that expose the obvious frauds (equal at 1 % FPR, 12 pp worse at 0.1 %);
+  the night segment has a 32 % higher legit quantile, so hour-segmented thresholds trade 1 TP
+  for 13 FP. The information the autoencoder has about frauds is in the residual, and the
+  Phase 7 diagnosis already showed that the residual of the missed frauds looks legitimate.
+* **Gate G8:** no legit-only candidate reaches 85 % on any split; the unsupervised ceiling for
+  this feature set is ≈ 81–82 % at 1 % FPR. Phase 9 (labels inside the model) is next, with the
+  plain-MSE AE as the AE component. Implementation: `VariationalAutoencoder` in `model.py`
+  (shared training loop via `model.loss`), `codes` / `fit_latent_gmm` / `gmm_nll` /
+  `reconstruction_probability` in `scoring.py`, `hour_segmented_threshold` in `threshold.py`,
+  `data.hours_from_features`; `fraud-ae threshold --method / --strategy` accept the new values.
+  138 tests.
