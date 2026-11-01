@@ -14,6 +14,8 @@ from pathlib import Path
 from . import __version__
 from .config import (
     SCORE_METHODS,
+    SEMI_METHODS,
+    SUPERVISED_METHODS,
     THRESHOLD_STRATEGIES,
     Config,
     ConfigError,
@@ -141,6 +143,50 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
     )
+
+    for name, methods, help_ in (
+        (
+            "supervised",
+            SUPERVISED_METHODS,
+            "Phase 9: labelled frauds inside the model, 5-fold out-of-fold",
+        ),
+        (
+            "semi",
+            SEMI_METHODS,
+            "Phase 9: legit-only AE fine-tuned with labelled frauds (out-of-fold)",
+        ),
+    ):
+        p = sub.add_parser(name, help=help_)
+        _add_config(p)
+        p.add_argument(
+            "--methods",
+            nargs="*",
+            choices=list(methods),
+            help=f"default: all of {' '.join(methods)}",
+        )
+        p.add_argument(
+            "--budgets",
+            nargs="*",
+            type=int,
+            help="label budgets per fold (default: supervised.budgets)",
+        )
+        p.add_argument(
+            "--ae-run",
+            help="legit-only AE run for hybrid/fine-tuned methods (default: supervised.ae_run)",
+        )
+        p.add_argument("--suffix", default="", help="run-name suffix, runs/sup_<method><suffix>")
+        p.add_argument(
+            "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
+        )
+        _add_data_seed(p)
+
+    p = sub.add_parser(
+        "few-label", help="Phase 9: few-label table + figure from runs/*/few_label.json"
+    )
+    p.add_argument("--runs", nargs="+", required=True, help="supervised run directories")
+    p.add_argument("--out", default="results/v2_few_label.md")
+    p.add_argument("--figure", default="report/figures/v2_few_label.png")
+    p.add_argument("--reference", help="legit-only run directory drawn as a horizontal line")
 
     p = sub.add_parser("all", help="Phases 1-4 in sequence")
     _add_config(p)
@@ -550,6 +596,88 @@ def cmd_diagnose(
     return 0
 
 
+def cmd_supervised(
+    cfg: Config,
+    methods: list[str] | None,
+    budgets: list[int] | None,
+    ae_run: str | None,
+    suffix: str = "",
+    synthetic: bool = False,
+    data_seed: int | None = None,
+    default_methods: tuple[str, ...] = SUPERVISED_METHODS,
+) -> int:
+    """Phase 9: out-of-fold evaluation of supervised / weakly-supervised methods on the pooled
+    split; one run directory per method (``runs/sup_<method>``) with ``few_label.json``."""
+    from .data import load_splits
+    from .supervised import needs_ae, run_supervised
+    from .train import CONFIG_FILE, load_model
+
+    cfg = _with_data_seed(cfg, data_seed)
+    if ae_run:
+        cfg = dataclasses.replace(
+            cfg, supervised=dataclasses.replace(cfg.supervised, ae_run=ae_run)
+        )
+    methods_t = (
+        tuple(methods)
+        if methods
+        else tuple(m for m in cfg.supervised.methods if m in default_methods)
+    )
+    budgets_t = tuple(budgets) if budgets is not None else cfg.supervised.budgets
+    processed = _processed_dir(cfg, synthetic)
+    splits = load_splits(processed)
+    ae = None
+    if any(needs_ae(m) for m in methods_t):
+        ae_dir = project_root() / cfg.supervised.ae_run
+        if not (ae_dir / CONFIG_FILE).exists():
+            raise FileNotFoundError(f"{ae_dir} has no config.toml – train the legit-only AE first")
+        ae_cfg = load_config(ae_dir / CONFIG_FILE)
+        if _processed_dir(ae_cfg, synthetic) != processed:
+            raise ValueError(
+                f"{ae_dir} was trained on {ae_cfg.data.processed_dir}, "
+                f"not on {cfg.data.processed_dir}"
+            )
+        ae = load_model(ae_dir)
+    full_suffix = (
+        suffix
+        + (f"{DATA_SEED_SUFFIX}{data_seed}" if data_seed is not None else "")
+        + (SYNTHETIC_SUFFIX if synthetic else "")
+    )
+    results = run_supervised(
+        cfg, splits, project_root() / "runs", methods_t, budgets_t, ae, full_suffix
+    )
+    for name, m in results.items():
+        at = m["at_threshold"]
+        curve = "  ".join(f"{b['budget']}→{b['recall']:.1%}" for b in m["few_label"])
+        print(
+            f"{name}: out-of-fold recall {at['recall']:.1%} [{at['recall_ci_wilson'][0]:.1%}, "
+            f"{at['recall_ci_wilson'][1]:.1%}] at FPR {at['fpr']:.3%}  "
+            f"meets_target: {m['meets_target']}  few-label: {curve}"
+        )
+    return 0
+
+
+def cmd_few_label(runs: list[str], out: str, figure: str | None, reference: str | None) -> int:
+    from .evaluate import load_metrics
+    from .plots import few_label_curve
+    from .supervised import few_label_markdown
+
+    ref = None
+    if reference:
+        m = load_metrics(Path(reference))
+        ref = {
+            "run": Path(reference).name,
+            **{k: m["at_threshold"][k] for k in ("recall", "recall_ci_wilson", "fpr")},
+        }
+    md, rows = few_label_markdown([Path(r) for r in runs], ref)
+    out_p = Path(out)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    out_p.write_text(md)
+    if figure:
+        few_label_curve(rows, Path(figure), ref)
+    print(f"{len(rows)} methods → {out}" + (f", figure {figure}" if figure else ""))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -582,6 +710,19 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_report(args.template, args.out)
         if args.command == "diagnose":
             return cmd_diagnose(Path(args.run), args.against, args.fpr, args.synthetic)
+        if args.command in ("supervised", "semi"):
+            return cmd_supervised(
+                load_config(args.config),
+                args.methods,
+                args.budgets,
+                args.ae_run,
+                args.suffix,
+                args.synthetic,
+                args.data_seed,
+                SEMI_METHODS if args.command == "semi" else SUPERVISED_METHODS,
+            )
+        if args.command == "few-label":
+            return cmd_few_label(args.runs, args.out, args.figure, args.reference)
         if args.command == "all":
             cfg = load_config(args.config)
             run = Path(args.run)

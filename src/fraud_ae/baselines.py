@@ -217,7 +217,7 @@ def _describe(run: Path) -> dict[str, Any]:
         "split": cfg.data.split if cfg is not None else "?",
         "features": summary.get("input_dim", "?"),
         "score": m.get("score_method", th.score_method)
-        + ("+hour" if th.strategy == "quantile_by_hour" else ""),
+        + {"quantile_by_hour": "+hour", "quantile_oof": " (oof)"}.get(th.strategy, ""),
         "seed": summary.get("seed", "?"),
         "data_seed": cfg.data.seed if cfg is not None else "?",
         "val_mse": summary.get("best_val_legit_mse"),

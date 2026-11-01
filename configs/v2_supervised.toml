@@ -1,0 +1,65 @@
+# Roadmap v2 Phase 9 – supervised & weakly-supervised learning on the pooled split.
+# The frauds (all in test) are cut into 5 fixed folds; every method is fitted on train-legit +
+# the frauds of the other folds and scores its own fold out-of-fold; threshold = per-fold
+# val-legit quantile (never a fraud label). Hyper-parameters below are fixed in advance.
+
+[data]
+zip_path = "dataset.zip"
+raw_csv = "data/raw/creditcard.csv"
+processed_dir = "data/processed_pooled"
+expected_sha256 = "76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89"  # creditcard.csv (Phase 1)
+drop_duplicates = true
+log_amount = true
+time_feature = "sincos"       # "sincos" (hour-of-day encoding) | "drop"
+legit_fractions = [0.6, 0.2, 0.2]   # train / val / test share of legitimate rows
+fraud_val_fraction = 0.0      # pooled protocol: every fraud is a test fraud; val = legit only
+seed = 42
+
+[model]
+hidden_dims = [20, 10]        # encoder widths; decoder is mirrored
+latent_dim = 5
+activation = "elu"            # "elu" | "relu" | "tanh"
+batch_norm = false            # kept for ablation only (ADR 6)
+dropout = 0.0
+
+[train]
+epochs = 100
+batch_size = 512
+lr = 1e-3
+weight_decay = 1e-5
+patience = 10                 # early stopping on val-legit MSE
+seed = 42
+num_threads = 8
+
+[score]
+method = "mse"                # "mse" | "standardized" | "mahalanobis"
+
+[threshold]
+strategy = "quantile"         # "quantile" | "youden" | "max_f1"
+target_fpr = 0.009            # margin below the 1 % criterion (ADR 2)
+
+[eval]
+fpr_grid = [0.001, 0.005, 0.01, 0.02]
+target_recall = 0.85
+target_fpr = 0.01
+bootstrap_samples = 1000
+
+[supervised]
+n_folds = 5
+fold_seed = 42
+budgets = [25, 50, 100]      # labelled frauds per training fold for the few-label curve ("all" is implicit)
+methods = ["logreg", "hgb", "hgb_under", "mlp", "hybrid_logreg", "hybrid_hgb", "neg_ae", "sad_ae"]
+ae_run = "runs/ae_pooled"    # legit-only AE (same split) for the hybrid features and the fine-tuned AEs
+undersample_ratio = 20
+hgb_max_iter = 200
+hgb_learning_rate = 0.1
+hgb_max_leaf_nodes = 31
+logreg_c = 1.0
+mlp_epochs = 10
+mlp_fraud_per_batch = 32
+finetune_epochs = 20
+finetune_lr = 1e-3
+fraud_per_batch = 32
+margin_quantile = 0.999
+margin_weight = 1.0
+sad_weight = 1.0

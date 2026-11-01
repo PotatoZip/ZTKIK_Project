@@ -57,6 +57,15 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
   configs/v2_unsup_by_hour.toml   threshold.strategy = "quantile_by_hour"
   → scripts/run_v2_unsupervised.sh (selection on data seed 0, confirmation on 1–4)
                                   → results/v2_unsupervised.md, report/figures/v2_unsup_*.png
+
+  Roadmap v2 (Phase 9, labels inside the model – configs/v2_supervised.toml):
+  pooled split + runs/ae_pooled → supervised.py / semi.py (fraud-ae supervised | semi)
+    5 fixed fraud folds (folds.json) → one model per fold on train-legit + other-fold frauds
+    → per-fold val-legit quantile → out-of-fold, threshold-normalised scores (threshold 1.0)
+    → runs/sup_<method>/{config.toml, folds.json, scores_*.npz, threshold.json, metrics.json,
+                         train_summary.json, few_label.json, figures/}
+  → fraud-ae few-label → results/v2_few_label.md, report/figures/v2_few_label.png
+  → scripts/run_v2_supervised.sh → results/v2_supervised.md, report/figures/v2_sup_*.png
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
@@ -81,11 +90,13 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `threshold.py` | threshold strategies, alarm rule `score > threshold`, hour-segmented quantiles | `quantile_threshold`, `youden_threshold`, `max_f1_threshold`, `choose_threshold(scores_val, y_val, cfg, score_method) -> ThresholdResult`, `hour_segmented_threshold(...) -> (ThresholdResult, scores_val_n, scores_test_n)`, `save_threshold` / `load_threshold` |
 | `evaluate.py` | metrics + CIs + criterion check | `evaluate(scores, y, threshold, cfg, seed) -> dict`, `recall_at_fpr`, `threshold_for_fpr`, `wilson_interval`, `bootstrap_ci`, `per_feature_summary`, `save_metrics` / `load_metrics` |
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs (families `_seed<n>` / `_dseed<n>`) | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir, figure_prefix)` |
+| `supervised.py` | Phase 9: fixed fraud folds, out-of-fold protocol with per-fold legit-quantile thresholds, supervised classifiers (`logreg`, `hgb`, `hgb_under`, `mlp`), hybrid features on the legit-only AE, run-directory writer, few-label table | `make_folds`, `hybrid_features`, `fit_mlp`, `fit_score(method, cfg, Xl, Xf, X_eval, seed, ae)`, `run_oof`, `write_run`, `run_supervised(cfg, splits, runs_root, methods, budgets, ae, suffix)`, `few_label_markdown` |
+| `semi.py` | Phase 9: legit-only AE fine-tuned with labelled frauds – margin loss (`neg_ae`) or Deep-SAD latent term (`sad_ae`) | `finetune(ae, cfg, Xl, Xf, seed, mode)`, `semi_scores(model, X, info)` |
 | `diagnose.py` | Phase 7: profile of the frauds a run misses (score percentile, amount, hour, separating raw features), overlap with other runs' missed sets, ensemble upper bounds | `missed_masks`, `legit_percentile`, `group_profile`, `top_features`, `overlap_matrix`, `fusion_bounds`, `diagnose(run, against, processed_dir, root, fpr) -> (summary, arrays)`, `save_diagnostics` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
 | `report.py` | render `report/report.md` from `report/report_template.md`; placeholders resolve to JSON artifact values with arithmetic and `mean/std/min/max` | `render(template, root)`, `render_report(root, template, out)`, `references(template)` |
-| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines [--suffix]|all` (all with `--synthetic`; `prepare`/`train`/`baselines`/`all` with `--data-seed`), `compare [--runs] [--out] [--figures-dir] [--figure-prefix]`, `report [--template] [--out]`, `diagnose --run [--against …] [--fpr]` | `main(argv)`; paths resolve against the cwd |
-| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `run_v2_unsupervised.sh`: the Phase 8 candidates with the pre-registered selection; `check.sh`: format check + lint + tests | – |
+| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines [--suffix]|all` (all with `--synthetic`; `prepare`/`train`/`baselines`/`all` with `--data-seed`), `compare [--runs] [--out] [--figures-dir] [--figure-prefix]`, `report [--template] [--out]`, `diagnose --run [--against …] [--fpr]`, `supervised` / `semi --config [--methods] [--budgets] [--ae-run] [--suffix] [--data-seed] [--synthetic]`, `few-label --runs … [--out] [--figure] [--reference]` | `main(argv)`; paths resolve against the cwd |
+| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `run_v2_unsupervised.sh`: the Phase 8 candidates with the pre-registered selection; `run_v2_supervised.sh`: the Phase 9 methods, few-label curve and side-by-side table; `check.sh`: format check + lint + tests | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
@@ -222,6 +233,58 @@ re-runs only the selected candidate on data seeds 1–4 next to the base AE, and
 the other candidates are reported but never re-picked. Ensembles and fusion are not re-run:
 their ceiling was measured in Phase 7 (`diagnostics.json`, ADR 27).
 
+### Supervised protocol (Phase 9)
+* **Folds.** The frauds of the pooled test split (all 473) are cut into `supervised.n_folds` = 5
+  balanced folds by a seeded permutation drawn *first* from a fresh generator, so the assignment
+  depends only on the (sorted, raw) fraud row ids and is identical for every data seed; the
+  legit validation and test rows get fold ids from the same generator afterwards. `folds.json`
+  in every run directory records the fraud rows, their folds and the sizes. A unit test asserts
+  that no fraud is both in the training set of a fold model and in that model's evaluation fold.
+* **One model per fold.** The fold-*k* model is fitted on **all** training legit rows (169 952,
+  never a fraud among them) plus the frauds of the other folds, optionally sub-sampled with a
+  seed derived from `(train.seed, budget, k)` to the label budget. It scores the legit
+  validation rows, and its threshold is the `1 − target_fpr` quantile of those scores –
+  exactly the v1 rule, no fraud label involved. It then scores only the fold-*k* validation
+  and test rows; every row is therefore scored by exactly one model that never saw it, and
+  the frauds are scored out-of-fold.
+* **Normalisation.** Each fold's scores are divided by its own threshold (classifier scores
+  are probabilities, AE scores are MSE or a squared distance, all positive), so the stored
+  `scores_{val,test}.npz` are out-of-fold scores with the common threshold 1.0
+  (`threshold.json`: strategy `quantile_oof`, raw per-fold thresholds under `segments`). The
+  ordinary `evaluate` then gives the pooled out-of-fold confusion matrix, the Wilson interval
+  over all 473 frauds and `meets_target`; `compare` and the report need no special case. Within
+  a fold the ranking is untouched; across folds the thresholds are aligned, which is what a
+  deployment of five models on five traffic shares would do.
+* **Methods** (`SupervisedConfig.methods`, hyper-parameters fixed in the config, never chosen
+  on a held-out fold): `logreg` (balanced class weight, C = 1), `hgb`
+  (`HistGradientBoostingClassifier`, 200 iterations, balanced class weight, seeded),
+  `hgb_under` (legit under-sampled to 20 × the labelled frauds, no weighting), `mlp` (PyTorch
+  31→20→10→1 with the AE encoder widths, balanced mini-batches of 480 legit + 32 frauds drawn
+  with replacement, 10 epochs, seeded), `hybrid_logreg` / `hybrid_hgb` (the same classifiers on
+  `[x, x − AE(x), mse(x)]` from the legit-only AE in `supervised.ae_run`, which must come from
+  the same processed split – checked), and the fine-tuned autoencoders of `semi.py`: `neg_ae`
+  (loss = MSE on the legit batch + λ · mean relu(m − MSE) on a fraud batch, margin *m* = the
+  0.999 quantile of train-legit MSE under the warm-start model, score = MSE) and `sad_ae`
+  (loss = MSE + η · (mean ‖z_l − c‖² + mean 1/(‖z_f − c‖² + ε)), centre *c* = mean legit code of
+  the warm-start model, score = ‖z − c‖²). Both start from the `ae_run` checkpoint, run 20
+  epochs at lr 1e-3 with a 32-row fraud batch next to every 512-row legit batch, and are
+  seeded like everything else.
+* **Few-label curve.** Every method is also run at `supervised.budgets` = 25 / 50 / 100
+  labelled frauds per training fold (budgets at or above the available ≈ 378 are skipped);
+  only the all-label run gets the full run-directory contract, the per-budget pooled recall,
+  Wilson interval, FPR and verdict go to `few_label.json`. `fraud-ae few-label` tabulates and
+  plots them (`results/v2_few_label.md`, `report/figures/v2_few_label.png`) with the
+  legit-only AE as the horizontal reference.
+* **Known bias, measured as negligible.** The hybrid features of the training legit rows are
+  in-sample for the AE (it was fitted on them), while val/test residuals are out-of-sample.
+  The AE's train MSE (0.418) and val-legit MSE (0.420) differ by 0.5 %, so the shift the
+  classifier could exploit is far below the fraud/legit residual gap; the hybrid rows are read
+  with this in mind and the plain classifiers on `x` are the clean comparison.
+* **What is compared.** `results/v2_supervised.md` puts the legit-only AE, the supervised
+  classifiers, the hybrids and the fine-tuned AEs side by side at the same FPR rule; the hybrid
+  vs plain-classifier pair at equal label budgets is the test of whether the AE adds anything
+  once labels exist.
+
 ### Measurement protocol v2 (Phase 7)
 * **Pooled frauds.** `data.fraud_val_fraction = 0` puts every fraud into the test split;
   validation holds legitimate rows only. Nothing else changes: the quantile threshold, the
@@ -303,6 +366,10 @@ for everything.
 | 28 | The VAE is a `model.kind` on the same trunk, trained by the same loop through `model.loss`, with a deterministic `forward` | one training loop, one checkpoint format, one early-stopping criterion (val-legit MSE of the reconstruction) for both models; the VAE-specific score is a `score.method`, so AE scores can be computed on a VAE run for comparison |
 | 29 | `quantile_by_hour` normalises the stored scores instead of carrying several thresholds | the run-directory contract, `evaluate`, `compare` and the report assume one threshold; dividing by the segment quantile makes the segmented rule a plain `score > 1.0` while the raw thresholds stay in `threshold.json` |
 | 30 | Phase 8 selection is executed by the script, not by a reader of the table | the pre-registered rule (pick on data seed 0, confirm on 1–4) is only credible if nothing is re-picked after seeing the confirmation seeds; encoding it in `run_v2_unsupervised.sh` removes the temptation |
+| 31 | Out-of-fold scores are normalised by the per-fold val-legit threshold and stored with threshold 1.0 | one model per fold means five thresholds; dividing by them keeps the run-directory contract, the evaluator, `compare` and the report untouched and mirrors a deployment of five models on five traffic shares; the raw thresholds stay in `threshold.json` |
+| 32 | Fold models are fitted on all training legit rows plus other-fold frauds; the legit val/test rows are folded too | legit rows never carry a label the method could leak, so sharing them across folds is safe; folding val/test legit rows gives every row exactly one out-of-fold score instead of an implicit five-model ensemble on legit traffic |
+| 33 | Fine-tuned AEs (`neg_ae`, `sad_ae`) warm-start from the legit-only checkpoint instead of training from scratch | keeps the AE the central model (the legit-only detector plus a few labels, not a new architecture), is 20× cheaper, and makes the few-label curve a measurement of what the labels add to the existing detector |
+| 34 | Hyper-parameters of every Phase 9 method are fixed in `configs/v2_supervised.toml` | with the frauds both trained on and evaluated out-of-fold, any tuning on the pooled number would be test-set tuning; fixed settings plus the few-label curve are the honest version |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.

@@ -1,6 +1,6 @@
 [project]
 name = "fraud-ae"
-version = "1.2.0"
+version = "1.3.0"
 description = "Project 12 (ZTKIK): credit-card fraud detection with a deep autoencoder (PyTorch, CPU)."
 readme = "README.md"
 requires-python = ">=3.11"

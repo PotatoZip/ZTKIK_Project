@@ -90,6 +90,44 @@ class EvalConfig:
     bootstrap_samples: int = 1000
 
 
+SUPERVISED_METHODS = (
+    "logreg",
+    "hgb",
+    "hgb_under",
+    "mlp",
+    "hybrid_logreg",
+    "hybrid_hgb",
+    "neg_ae",
+    "sad_ae",
+)
+SEMI_METHODS = ("neg_ae", "sad_ae")
+
+
+@dataclass(frozen=True)
+class SupervisedConfig:
+    """Roadmap v2 Phase 9 – labelled frauds inside the model, evaluated out-of-fold.
+    Hyper-parameters are fixed here in advance (never chosen on a held-out fold)."""
+
+    n_folds: int = 5
+    fold_seed: int = 42
+    budgets: tuple[int, ...] = (25, 50, 100)  # labelled frauds per training fold; "all" is implicit
+    methods: tuple[str, ...] = SUPERVISED_METHODS
+    ae_run: str = "runs/ae_pooled"  # legit-only AE for the hybrid features and the fine-tuned AEs
+    undersample_ratio: int = 20  # hgb_under: legit rows kept per labelled fraud
+    hgb_max_iter: int = 200
+    hgb_learning_rate: float = 0.1
+    hgb_max_leaf_nodes: int = 31
+    logreg_c: float = 1.0
+    mlp_epochs: int = 10
+    mlp_fraud_per_batch: int = 32  # balanced mini-batches: 480 legit + 32 fraud rows
+    finetune_epochs: int = 20  # neg_ae / sad_ae: epochs of fine-tuning from the legit-only AE
+    finetune_lr: float = 1e-3
+    fraud_per_batch: int = 32
+    margin_quantile: float = 0.999  # neg_ae: margin = this quantile of train-legit MSE (warm start)
+    margin_weight: float = 1.0
+    sad_weight: float = 1.0
+
+
 @dataclass(frozen=True)
 class Config:
     data: DataConfig = field(default_factory=DataConfig)
@@ -98,6 +136,7 @@ class Config:
     score: ScoreConfig = field(default_factory=ScoreConfig)
     threshold: ThresholdConfig = field(default_factory=ThresholdConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
+    supervised: SupervisedConfig = field(default_factory=SupervisedConfig)
     source_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +152,7 @@ _SECTIONS = {
     "score": ScoreConfig,
     "threshold": ThresholdConfig,
     "eval": EvalConfig,
+    "supervised": SupervisedConfig,
 }
 
 
@@ -173,6 +213,18 @@ def validate(cfg: Config) -> None:
         raise ConfigError("eval.target_fpr / target_recall out of range")
     if any(not 0.0 < f < 1.0 for f in ev.fpr_grid):
         raise ConfigError("eval.fpr_grid values must be in (0, 1)")
+    sv = cfg.supervised
+    if sv.n_folds < 2:
+        raise ConfigError("supervised.n_folds must be at least 2")
+    if any(b <= 0 for b in sv.budgets):
+        raise ConfigError("supervised.budgets must be positive label counts")
+    unknown = set(sv.methods) - set(SUPERVISED_METHODS)
+    if unknown:
+        raise ConfigError(f"supervised.methods unknown: {sorted(unknown)}")
+    if not 0.0 < sv.margin_quantile < 1.0:
+        raise ConfigError("supervised.margin_quantile must be in (0, 1)")
+    if sv.finetune_epochs <= 0 or sv.mlp_epochs <= 0 or sv.undersample_ratio <= 0:
+        raise ConfigError("supervised epochs and undersample_ratio must be positive")
 
 
 def load_config(path: str | Path) -> Config:

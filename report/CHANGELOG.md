@@ -6,10 +6,55 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned (Roadmap v2 in `ROADMAP.md`): Phase 9 fully supervised classifiers (logistic
-regression, gradient boosting, MLP), weakly-supervised AE and hybrid stacking with 5-fold CV
-over frauds and a few-label curve; Phase 10 rolling threshold, variance, evasion probe;
-Phase 11 report v2.
+Planned (Roadmap v2 in `ROADMAP.md`): Phase 10 rolling threshold, seed / data-seed variance of
+the winners (`hgb`, `neg_ae`), evasion probe; Phase 11 report v2 (sections 6.8–6.10, abstract
+and conclusions around "what labels buy").
+
+## [1.3.0] – 2026-10-31 – Roadmap v2 Phase 9: labels inside the model (milestone M5)
+
+### Added
+- `fraud_ae.supervised`: fixed fraud folds (`make_folds`, `folds.json`), out-of-fold protocol
+  with per-fold val-legit quantile thresholds and threshold-normalised scores (`run_oof`,
+  strategy `quantile_oof`), methods `logreg`, `hgb`, `hgb_under`, `mlp` (PyTorch, balanced
+  mini-batches), `hybrid_logreg` / `hybrid_hgb` on `[x, residual, AE score]`
+  (`hybrid_features`), run-directory writer with `few_label.json`, `few_label_markdown`,
+  `needs_ae`.
+- `fraud_ae.semi`: `finetune` of the legit-only AE with a margin loss (`neg_ae`) or a Deep-SAD
+  latent term (`sad_ae`, ε = 0.01, divergence guard), `semi_scores`.
+- `[supervised]` config section (`SupervisedConfig`, validated) and
+  `configs/v2_supervised.toml`; CLI `fraud-ae supervised` / `fraud-ae semi [--methods]
+  [--budgets] [--ae-run] [--suffix] [--data-seed] [--synthetic]` and `fraud-ae few-label
+  --runs … [--out] [--figure] [--reference]`; `plots.few_label_curve` with a fixed eight-colour
+  series palette.
+- `scripts/run_v2_supervised.sh`; tracked `results/v2_supervised.md` (9 runs),
+  `results/v2_few_label.md`, `report/figures/{v2_few_label,v2_sup_comparison_recall}.png`.
+- Tests `tests/test_supervised.py` (9: fold coverage / balance / determinism, no fraud trained
+  on and evaluated in the same fold, identical fraud folds across data seeds, hybrid features
+  and every classifier, fine-tuned AEs, out-of-fold assembly with per-fold thresholds and
+  seeded sub-sampling, run-directory contract + few-label skip rule, config validation, CLI
+  end-to-end incl. the same-split AE check and the `semi` method restriction); suite 138 → 147.
+
+### Changed
+- `compare` labels out-of-fold runs (`<method> (oof)`).
+- Version 1.3.0; ARCHITECTURE: data flow, `supervised.py` / `semi.py` rows, "Supervised
+  protocol" section, ADRs 31–34; ROADMAP: Phase 9 ✅ with outcome, M5 reached; README: v2
+  outcome line, Phase 9 section.
+
+### Fixed (independent code review of the diff, before the final run)
+- Few-label budgets are skipped against the smallest fold's label count (was fold 0's).
+- `fraud-ae semi --methods` only accepts the fine-tuned AE methods.
+- Deep-SAD push-away term bounded (ε = 0.01); a non-finite loss stops fine-tuning and is
+  recorded; non-finite scores raise a clear error instead of an assertion.
+- MLP and fine-tuning loops drop the last partial legit batch; MLP probabilities in float64;
+  validation rows scored once per fold; a warning when a fold's val FPR is far from the target.
+
+### Results (real data, pooled split, 473 frauds out-of-fold, all labels)
+- `hybrid_hgb` 89.6 % [86.6 %, 92.1 %] at FPR 0.886 %, `hgb` 89.2 % [86.1 %, 91.7 %] at
+  0.909 %, `logreg` 88.8 %, `hgb_under` 88.4 %, `hybrid_logreg` 88.2 %, `neg_ae` 87.3 %
+  [84.0 %, 90.0 %] at 0.941 %, `mlp` 86.9 %, `sad_ae` 86.7 %; legit-only AE 80.8 %. Criterion
+  met by every method – milestone M5. Few-label: 25 labels per fold → best 83.9 %
+  (`hgb_under`), 50 → 86.0 %, 100 → 87.1 %; the AE as a feature adds +0.4 pp to HGB and costs
+  logistic regression 0.6–4 pp.
 
 ## [1.2.0] – 2026-10-31 – Roadmap v2 Phase 8: unsupervised ceiling
 
