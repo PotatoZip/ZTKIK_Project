@@ -228,7 +228,10 @@ committed so that readers need no artifacts. A placeholder `{{ expr | fmt }}` co
 `expr` may combine refs with `+ - * /` and `mean/std/min/max/abs` (evaluated through an
 `ast` whitelist, no `eval`); `fmt` ∈ `pct0..3`, `pp1`, `f0..4`, `int`, `verdict`, `str`.
 Rendering fails as a whole and lists every unresolved placeholder. The committed report is
-compared against a fresh render in the test suite whenever the real runs are present.
+compared against a fresh render in the test suite whenever the real runs are present. Refs may
+point at `runs/`, `data/processed*` and, since Phase 11, tracked `results/*.json`
+(`results/v2_robustness.json` feeds report Section 6.11); report v2 adds Sections 6.8–6.11 and
+Figures 11–15 on top of the unchanged v1 sections.
 
 ### Unsupervised ceiling (Phase 8)
 Four legit-only candidates, one config each under the pooled protocol: more training data

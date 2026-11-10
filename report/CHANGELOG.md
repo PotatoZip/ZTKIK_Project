@@ -6,9 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned (Roadmap v2 in `ROADMAP.md`): Phase 11 report v2 (sections 6.8–6.10, abstract and
-conclusions around "what labels buy", rolling-threshold and evasion results in the limitations,
-CHANGELOG 2.0.0).
+Nothing planned – Roadmap v1 and v2 are complete (milestone M6).
+
+## [2.0.0] – 2026-11-10 – Roadmap v2 Phase 11: report v2 (milestone M6)
+
+### Added
+- `report/report_template.md` → `report/report.md`: Sections 6.8 (pooled-fraud protocol,
+  repeated legit splits, literature row, missed-fraud diagnosis), 6.9 (legit-only ceiling:
+  pre-registered candidates and confirmation), 6.10 (labels inside the model: eight methods
+  out-of-fold, few-label curve, what the AE adds) and 6.11 (rolling threshold, variance of the
+  winners, evasion probe); Figures 11–15; references 9–10 (Deep SAD, PGD).
+- Project summary table as the Phase 11 outcome in `ROADMAP.md`; README Phase 11 section.
+
+### Changed
+- Report abstract, discussion ("what labels buy, and what the AE buys", literature row),
+  limitations (drift and evasion are now measured numbers), conclusions (seven points ending in
+  a deployment recommendation) and reproducibility (v2 scripts, artifact map) rewritten; the v1
+  Sections 1–6.7 are unchanged.
+- Report placeholders may reference tracked `results/*.json` in addition to `runs/` and
+  `data/processed*` (`tests/test_report.py`); version 2.0.0.
+
+### Results (as rendered in the report)
+- Legit-only AE: 77.2 % (v1 split) / 80.8 % [77.0 %, 84.1 %] (all 473 frauds) at FPR < 1 %,
+  ceiling ≈ 80–82 %. With labels, out-of-fold: gradient boosting 89.2 % [86.1 %, 91.7 %], the
+  AE with a margin loss 87.3 % – criterion met. Rolling threshold required (fixed: 2.20 % FPR
+  for the classifier; rolling: 1.05 %); 85.4 % recall on the 123 later frauds; all 22 seed /
+  split runs ≥ 85 %; evasion median L2 budget 12.
 
 ## [1.4.0] – 2026-11-09 – Roadmap v2 Phase 10: robustness and deployment realism
 

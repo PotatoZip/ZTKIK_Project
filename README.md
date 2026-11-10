@@ -44,7 +44,7 @@ uv run fraud-ae threshold --run runs/ae_base --method mahalanobis --strategy you
 uv run fraud-ae evaluate  --run runs/ae_base                              # 4. test-set metrics + CIs, meets_target, figures
 uv run fraud-ae baselines --config configs/base.toml                      # 5. PCA k=5/10/15 + Isolation Forest → runs/baseline_*
 uv run fraud-ae compare   --out results/comparison.md --figures-dir report/figures   #    table + figures from runs/*/metrics.json
-uv run fraud-ae report                                                    # 6. render report/report.md from the artifacts
+uv run fraud-ae report                                                    # 6./11. render report/report.md (v1 + v2 sections) from the artifacts
 uv run fraud-ae all       --config configs/base.toml --run runs/ae_base   # phases 1-4 (--synthetic for the toy set)
 scripts/run_ablations.sh                                                  # every AE variant + baselines + comparison + report (≈ 10 min)
 
@@ -139,8 +139,12 @@ temporal split, 88.8 % ± 0.3 % (`hgb`) and 87.2 % ± 0.6 % (`neg_ae`) over six 
 every run ≥ 85 % at FPR < 1 % – provided the legit quantile is re-estimated on a rolling window
 (the fixed v1 threshold would run `hgb` at 2.2 % FPR); evading the legit-only AE costs a median
 L2 budget of 12 standardised units, more than half of a fraud's distance to the legit mean.
-Next: Phase 11 (report v2). The sections below are the per-phase working notes; outcomes are in
-`ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1 report is unchanged until Phase 11.
+**Phase 11** (version 2.0.0, milestone M6): `report/report.md` is the final deliverable – the v1
+study plus Sections 6.8–6.11 (pooled protocol and diagnosis, legit-only ceiling, labels inside
+the model, robustness), abstract and conclusions rewritten around what labels buy, every number
+rendered from the artifacts. **The project is complete**; the one-table summary is the Phase 11
+outcome in `ROADMAP.md`. The sections below are the per-phase working notes; every change is in
+`report/CHANGELOG.md`.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
 
@@ -458,3 +462,14 @@ score inside an L2 ball, over a budget grid of 0.1–24 standardised units.
   not reach the boundary of the large budgets (fewer evasions at budget 24 than a straight-line
   shrink towards the legit mean); the step now scales with the budget and the probe also starts
   from that shrink, after which 600 steps change nothing.
+
+### Phase 11 – report v2 (`fraud-ae report`, milestone M6)
+
+* `report/report_template.md` gained Sections 6.8 (pooled protocol, repeated splits,
+  diagnosis), 6.9 (legit-only ceiling), 6.10 (labels inside the model, few-label curve) and
+  6.11 (rolling threshold, variance, evasion), Figures 11–15, a "what labels buy" discussion,
+  measured drift and evasion in the limitations, seven conclusions and the v2 reproduction
+  commands; the abstract now states the v1, pooled, labelled and robustness numbers.
+* Placeholders may read tracked `results/*.json` as well as `runs/` and `data/processed*`
+  (`results/v2_robustness.json` feeds Section 6.11); the test that the committed report equals
+  a fresh render is unchanged and green. 153 tests, version 2.0.0.

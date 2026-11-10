@@ -160,7 +160,7 @@ thresholded the same way (legit quantile of its own score) and judged by the sam
 | 8 | **Unsupervised ceiling** (legit-only training) ✅ | more training data (80/10/10), VAE reconstruction probability, latent-density score (GMM on codes), hour-segmented thresholds; negative results documented | `model.kind = "vae"`, `scoring` methods `recon_prob` / `latent_gmm` / `latent_nll`, `threshold.strategy = "quantile_by_hour"`, `configs/v2_unsup_*.toml` (6), `scripts/run_v2_unsupervised.sh` (mechanical pre-registered selection), `results/v2_unsupervised.md`, `report/figures/v2_unsup_*.png` | **G8 taken:** seed-0 table 9.9–81.0 %; selected `train80` (81.0 %), confirmed on seeds 1–4: **81.1 % ± 0.9 %** vs base 80.8 % ± 1.1 % (paired mean +0.3 pp, sign changes across seeds); VAE 79.3 %, by-hour 79.9 %, latent GMM 51.6–55.0 %, latent NLL 9.9 %; no run meets the criterion → **Phase 9** with plain MSE as the AE component | 1 session |
 | 9 | **Supervised & weakly-supervised learning** ✅ | 5-fold CV over the 473 frauds; fully supervised classifiers (logistic regression, gradient boosting, small MLP; class weighting vs undersampling); negative-example AE (margin loss), Deep-SAD-style latent term; hybrid stacking `[x, residual, AE score]`; few-label curve (25 / 50 / 100 / all) for every method | `fraud_ae/supervised.py`, `fraud_ae/semi.py`, `folds.json` per run, `configs/v2_supervised.toml`, `fraud-ae supervised` / `fraud-ae semi` / `fraud-ae few-label`, `scripts/run_v2_supervised.sh`, `results/v2_supervised.md`, `results/v2_few_label.md`, `report/figures/v2_few_label.png` | **G9 reached (milestone M5):** every method clears the criterion with all labels – out-of-fold recall 86.7–89.6 % at FPR 0.80–0.94 %, best `hybrid_hgb` 89.6 % [86.6 %, 92.1 %], plain `hgb` 89.2 % [86.1 %, 91.7 %], the AE with a margin loss 87.3 % [84.0 %, 90.0 %]; four methods keep the whole interval above 85 %; with 25 labels per fold the best method reaches 83.9 %, with 100 labels three methods pass; the AE as a feature adds nothing measurable (+0.4 pp for HGB, −0.6 to −4 pp for logistic regression) | 1.5 sessions |
 | 10 | **Robustness & deployment realism** ✅ | rolling-origin temporal validation with rolling threshold re-estimation (fixes the Phase 5 drift), seed and data-seed variance of the winners, adversarial evasion probe (minimal perturbation to cross below the threshold) | `fraud_ae/robustness.py`, `fraud-ae robustness`, `scripts/run_v2_robustness.sh`, `results/v2_robustness.{md,json}`, `report/figures/v2_{rolling_fpr,evasion}.png` | **G10 reached with one restatement:** rolling re-estimation removes the systematic threshold drift – mean FPR 0.85 % / 1.05 % / 0.88 % (AE / `hgb` / `neg_ae`) against 0.71 % / **2.20 %** / 1.00 % with the fixed v1 threshold – but no scheme keeps every 14 k-row window inside the 0.2-pp band (4 / 7 at best; binomial noise alone allows ≈ 80 %), so the target becomes "mean inside the band"; both winners stay at 85.4 % on the 123 future frauds and ≥ 85 % in every one of 5 model-seed and 6 data-seed runs (`hgb` 88.8 % ± 0.3 %, `neg_ae` 87.2 % ± 0.6 %); evading the legit-only AE costs a median L2 budget of 12 standardised units (median fraud norm 20.3): 1.6 % of detected frauds evade within 1 unit, 26 % not within 24; V17 / V14 / V12 move | 1 session |
-| 11 | **Report v2** | sections 6.8–6.10, updated abstract and conclusions, every number via placeholders | `report/report_template.md` → `report/report.md`, CHANGELOG 2.0.0, README outcome line | **M6:** report rendered from artifacts, committed report ≡ fresh render (existing test) | 0.5 session |
+| 11 | **Report v2** ✅ | sections 6.8–6.11, updated abstract, discussion, limitations and conclusions, every number via placeholders | `report/report_template.md` → `report/report.md` (Sections 6.8 pooled protocol + diagnosis, 6.9 legit-only ceiling, 6.10 labels inside the model, 6.11 robustness; Figures 11–15), CHANGELOG 2.0.0, README outcome line | **M6 reached:** report rendered from the artifacts (placeholders may now also read tracked `results/*.json`), committed report ≡ fresh render (existing test) | 0.5 session |
 
 Milestones: **M4** pooled protocol and diagnosis (end of Phase 7, reached 2026-10-29) · **M5**
 criterion reached or ceiling proven (end of Phase 9 – **reached 2026-10-31**: legit-only
@@ -502,6 +502,27 @@ Protocol (`fraud-ae robustness --config configs/v2_supervised.toml`, `scripts/ru
   scheme meets for the AE and `neg_ae` and misses by 0.05 pp for `hgb`. Both winners survive the
   robustness checks; the evasion result enters the report's limitations as a measured number.
   → Phase 11 (report v2).
+
+### Phase 11 outcome (2026-11-10, milestone M6) – project summary
+
+`report/report.md` is the final deliverable: the v1 study (Sections 1–6.7) unchanged, four new
+sections rendered from the v2 artifacts, and an abstract, discussion, limitations and
+conclusions rewritten around *what labels buy*. Every number is a placeholder resolved by
+`fraud-ae report`; the test suite fails if the committed report and the artifacts disagree.
+
+| Question | Answer (all at FPR < 1 %, Wilson 95 % intervals in the report) | Where |
+|---|---|---|
+| Does a legit-only autoencoder reach 85 % recall? | No. 77.2 % on the v1 split, **80.8 % [77.0, 84.1]** on all 473 frauds, 80.8 % ± 1.1 % over five legit splits | §6.1, §6.8 |
+| Is that a limit of the model or of the approach? | Of the approach: eleven v1 variants, more data, a VAE, latent density, hour-segmented thresholds all stay at ≈ 80–82 %; the 91 missed frauds lie on the legit manifold; no unsupervised ensemble passes (union 82.5 % at 1.77 % FPR) | §6.3–6.4, §6.8–6.9 |
+| Is the AE still the best unsupervised detector? | Yes: +7.6 pp over PCA k = 15, +23 pp over Isolation Forest on 473 frauds, ahead on the temporal split | §6.5–6.6, §6.8 |
+| What do labels buy? | The criterion: out-of-fold over all 473 frauds, gradient boosting **89.2 % [86.1, 91.7]**, the AE with a margin loss **87.3 % [84.0, 90.0]**, every labelled method ≥ 85 %; ≈ 50 labels per fold suffice for a tree model; the AE as a feature adds nothing measurable (+0.4 pp) | §6.10 |
+| Does it survive time, seeds and splits? | A fixed threshold drifts (gradient boosting at 2.2 % FPR); a rolling legit quantile restores the mean (1.05 %); both winners keep 85.4 % on the 123 later frauds and ≥ 85 % in all 22 seed / split runs | §6.11 |
+| How hard is it to evade? | White-box median L2 budget 12 standardised units (median fraud norm 20.3); 1.6 % evade within one unit; V17 / V14 / V12 move | §6.11 |
+| Recommendation | Supervised classifier for known fraud patterns + legit-only AE for departures from normal traffic, both behind a rolling threshold; account-level context as the next source of recall | §7, §9 |
+
+Package: version 2.0.0, 153 tests, `scripts/check.sh` green; `scripts/run_ablations.sh` +
+`scripts/run_v2_{protocol,unsupervised,supervised,robustness}.sh` reproduce every artifact on
+a CPU in about an hour. Roadmap v1 + v2 complete.
 
 ## Risks
 
