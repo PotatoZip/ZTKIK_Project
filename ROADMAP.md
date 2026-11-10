@@ -159,7 +159,7 @@ thresholded the same way (legit quantile of its own score) and judged by the sam
 | 7 | **Diagnosis & measurement protocol** ✅ | pooled-fraud protocol (`fraud_val_fraction = 0`), repeated legit splits (`--data-seed`, 5 seeds), `fraud-ae diagnose` (missed-fraud profiles, overlap matrix, fusion upper bounds), literature-protocol replication (all frauds in test, no dedupe) | `configs/v2_{pooled,literature}.toml`, `--data-seed` on `prepare/train/baselines/all` (`<processed_dir>_dseed<N>`; `threshold`/`evaluate` follow the run snapshot), `baselines --suffix`, `compare --figure-prefix`, `diagnose.py` + `fraud-ae diagnose` → `diagnostics.json` + `figures/missed_frauds.png`, `scripts/run_v2_protocol.sh`, `results/v2_protocol.md` | **G7 taken:** pooled recall 80.8 % [77.0 %, 84.1 %] at FPR 0.955 % (382 of 473; needs 403); 5 data seeds 80.5 % ± 1.0 %; diagnosis confirms "missed frauds are on the manifold" (91 missed, legit-percentile median 83.7 %, V14/V17 ≈ −1.9/+1.6 vs −8.0/−8.4 for detected); `meets_target` false → Phase 8 | 1 session |
 | 8 | **Unsupervised ceiling** (legit-only training) ✅ | more training data (80/10/10), VAE reconstruction probability, latent-density score (GMM on codes), hour-segmented thresholds; negative results documented | `model.kind = "vae"`, `scoring` methods `recon_prob` / `latent_gmm` / `latent_nll`, `threshold.strategy = "quantile_by_hour"`, `configs/v2_unsup_*.toml` (6), `scripts/run_v2_unsupervised.sh` (mechanical pre-registered selection), `results/v2_unsupervised.md`, `report/figures/v2_unsup_*.png` | **G8 taken:** seed-0 table 9.9–81.0 %; selected `train80` (81.0 %), confirmed on seeds 1–4: **81.1 % ± 0.9 %** vs base 80.8 % ± 1.1 % (paired mean +0.3 pp, sign changes across seeds); VAE 79.3 %, by-hour 79.9 %, latent GMM 51.6–55.0 %, latent NLL 9.9 %; no run meets the criterion → **Phase 9** with plain MSE as the AE component | 1 session |
 | 9 | **Supervised & weakly-supervised learning** ✅ | 5-fold CV over the 473 frauds; fully supervised classifiers (logistic regression, gradient boosting, small MLP; class weighting vs undersampling); negative-example AE (margin loss), Deep-SAD-style latent term; hybrid stacking `[x, residual, AE score]`; few-label curve (25 / 50 / 100 / all) for every method | `fraud_ae/supervised.py`, `fraud_ae/semi.py`, `folds.json` per run, `configs/v2_supervised.toml`, `fraud-ae supervised` / `fraud-ae semi` / `fraud-ae few-label`, `scripts/run_v2_supervised.sh`, `results/v2_supervised.md`, `results/v2_few_label.md`, `report/figures/v2_few_label.png` | **G9 reached (milestone M5):** every method clears the criterion with all labels – out-of-fold recall 86.7–89.6 % at FPR 0.80–0.94 %, best `hybrid_hgb` 89.6 % [86.6 %, 92.1 %], plain `hgb` 89.2 % [86.1 %, 91.7 %], the AE with a margin loss 87.3 % [84.0 %, 90.0 %]; four methods keep the whole interval above 85 %; with 25 labels per fold the best method reaches 83.9 %, with 100 labels three methods pass; the AE as a feature adds nothing measurable (+0.4 pp for HGB, −0.6 to −4 pp for logistic regression) | 1.5 sessions |
-| 10 | **Robustness & deployment realism** | rolling-origin temporal validation with rolling threshold re-estimation (fixes the Phase 5 drift), seed and data-seed variance of the winner, adversarial evasion probe (minimal perturbation to cross below the threshold) | `results/v2_robustness.md`, evasion figure | rolling threshold holds FPR within [0.8 %, 1.0 %] on every window; variance tables; median evasion budget reported | 0.5–1 session |
+| 10 | **Robustness & deployment realism** ✅ | rolling-origin temporal validation with rolling threshold re-estimation (fixes the Phase 5 drift), seed and data-seed variance of the winners, adversarial evasion probe (minimal perturbation to cross below the threshold) | `fraud_ae/robustness.py`, `fraud-ae robustness`, `scripts/run_v2_robustness.sh`, `results/v2_robustness.{md,json}`, `report/figures/v2_{rolling_fpr,evasion}.png` | **G10 reached with one restatement:** rolling re-estimation removes the systematic threshold drift – mean FPR 0.85 % / 1.05 % / 0.88 % (AE / `hgb` / `neg_ae`) against 0.71 % / **2.20 %** / 1.00 % with the fixed v1 threshold – but no scheme keeps every 14 k-row window inside the 0.2-pp band (4 / 7 at best; binomial noise alone allows ≈ 80 %), so the target becomes "mean inside the band"; both winners stay at 85.4 % on the 123 future frauds and ≥ 85 % in every one of 5 model-seed and 6 data-seed runs (`hgb` 88.8 % ± 0.3 %, `neg_ae` 87.2 % ± 0.6 %); evading the legit-only AE costs a median L2 budget of 12 standardised units (median fraud norm 20.3): 1.6 % of detected frauds evade within 1 unit, 26 % not within 24; V17 / V14 / V12 move | 1 session |
 | 11 | **Report v2** | sections 6.8–6.10, updated abstract and conclusions, every number via placeholders | `report/report_template.md` → `report/report.md`, CHANGELOG 2.0.0, README outcome line | **M6:** report rendered from artifacts, committed report ≡ fresh render (existing test) | 0.5 session |
 
 Milestones: **M4** pooled protocol and diagnosis (end of Phase 7, reached 2026-10-29) · **M5**
@@ -411,6 +411,97 @@ Hyper-parameters fixed in the config; nothing was tuned on the held-out folds.
 * **Evasion probe.** Gradient descent on the input of each detected fraud to minimise its score
   below the threshold under an L2 budget; report the median budget and which features move.
   Turns the threat-model discussion into a measured limitation.
+
+### Phase 10 outcome (2026-11-09)
+
+Protocol (`fraud-ae robustness --config configs/v2_supervised.toml`, `scripts/run_v2_robustness.sh`,
+≈ 12 min CPU including the 18 variance runs; `results/v2_robustness.md` / `.json`):
+
+* **Rolling threshold** (`report/figures/v2_rolling_fpr.png`). Temporal split of Phase 5
+  (`configs/ablation_temporal.toml`): the models see the first 60 % of traffic (`hgb` and
+  `neg_ae` also its 342 frauds), the last 40 % (113 432 rows, 131 frauds) is cut into 8 windows
+  of 14 162–14 163 legit rows in time order; window 0 calibrates the fixed threshold (the 0.9 %
+  legit quantile, v1 behaviour), windows 1–7 (123 frauds) are evaluated with that threshold,
+  with the quantile re-estimated on the previous window's legit rows, and with it re-estimated
+  on all rows of the previous window (label-free).
+
+  | Model | Scheme | Windows in [0.8 %, 1.0 %] | FPR min–max (mean) | Recall, windows 1–7 [Wilson 95 %] |
+  |---|---|---:|---|---|
+  | legit-only AE | fixed | 4 / 7 | 0.35–0.96 % (0.71 %) | 74.8 % [66.5, 81.6] |
+  | legit-only AE | rolling, legit rows | 4 / 7 | 0.51–1.08 % (0.85 %) | 77.2 % [69.1, 83.8] |
+  | `hgb` | fixed | 0 / 7 | 1.47–2.86 % (**2.20 %**) | 87.8 % [80.9, 92.5] |
+  | `hgb` | rolling, legit rows | 4 / 7 | 0.68–1.50 % (1.05 %) | 85.4 % [78.1, 90.5] |
+  | `hgb` | rolling, all rows | 3 / 7 | 0.61–1.42 % (0.94 %) | 85.4 % [78.1, 90.5] |
+  | `neg_ae` | fixed | 0 / 7 | 0.65–1.17 % (1.00 %) | 85.4 % [78.1, 90.5] |
+  | `neg_ae` | rolling, legit rows | 4 / 7 | 0.57–1.13 % (0.88 %) | 85.4 % [78.1, 90.5] |
+  | `neg_ae` | rolling, all rows | 2 / 7 | 0.46–1.07 % (0.79 %) | 84.6 % [77.1, 89.9] |
+
+  Three readings. (i) The fixed threshold is the failure mode, and it is worst for the
+  supervised winner: the legit scores of `hgb` drift upward after the calibration window, so the
+  v1 procedure would run it at 2.2 % FPR – more than twice the budget – while the legit-only AE
+  drifts the other way (0.35–0.52 % in windows 5–7, the Phase 5 observation). Re-estimating the
+  quantile on the previous window removes the systematic part for all three models (means
+  0.85 % / 1.05 % / 0.88 %) at a one-window lag (the AE overshoots to 1.08 % in window 7 after
+  the quiet windows 5–6). (ii) The target "every window inside [0.8 %, 1.0 %]" is met by no
+  scheme and is too tight for the data: a window holds 14 163 legit rows, so the binomial
+  standard error of a 0.9 % FPR is 0.08 pp and even a perfectly calibrated threshold lands
+  inside a ±0.1 pp band only about 80 % of the time; 4 / 7 with the rolling threshold is
+  consistent with no systematic error, 0 / 7 with the fixed one is not. The label-free variant
+  undershoots by the fraud share of the window, as expected. (iii) The Phase 9 risk "supervised
+  models learn the two-day fraud campaigns" does not materialise on the point estimate: trained
+  on the 342 frauds of the first 60 % of traffic, `hgb` and `neg_ae` still catch 85.4 % of the
+  123 later frauds at a rolling FPR of 1.05 % / 0.88 %, 8 pp above the legit-only AE on the same
+  windows – with a wide interval ([78 %, 91 %], 123 frauds) whose lower bound is below 85 %.
+* **Variance of the winners** (all labels, out-of-fold, 473 frauds; model seeds 0–3 + 42 on the
+  base pooled split, legit splits 0–4 + 42, each with its own legit-only AE):
+
+  | Family | Group | Runs | Recall mean ± std (min–max) | FPR min–max | All ≥ 85 % |
+  |---|---|---:|---|---|:---:|
+  | `hgb` | model seed | 5 | 89.2 % ± 0.0 % (89.2–89.2 %) | 0.91–0.91 % | ✅ |
+  | `hgb` | data seed | 6 | 88.8 % ± 0.3 % (88.6–89.2 %) | 0.82–0.93 % | ✅ |
+  | `neg_ae` | model seed | 5 | 87.4 % ± 0.4 % (86.9–87.9 %) | 0.90–1.00 % | ✅ |
+  | `neg_ae` | data seed | 6 | 87.2 % ± 0.6 % (86.3–87.9 %) | 0.84–0.96 % | ✅ |
+
+  Gradient boosting without early stopping or subsampling is deterministic, so its model-seed
+  spread is exactly zero by construction and the data-seed group is the informative one; the
+  fine-tuned AE varies by ≈ 0.5 pp either way. Every one of the 22 runs clears 85 % at
+  FPR < 1 % (closest call: `neg_ae` seed 1 at 0.996 %); the split-to-split spread of
+  0.3–0.6 pp is well inside the Wilson half-width (≈ 3 pp), so the Phase 9 conclusion does not
+  hinge on the seed or the split.
+* **Evasion probe** (`report/figures/v2_evasion.png`; white-box PGD on the legit-only pooled
+  AE, 382 detected test frauds, budgets 0.1–24 in standardised feature units):
+
+  | L2 budget | 1 | 2 | 4 | 6 | 8 | 12 | 16 | 24 |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  | detected frauds pushed below the threshold | 1.6 % | 3.9 % | 11.5 % | 28.3 % | 34.3 % | 50.8 % | 62.3 % | 74.3 % |
+
+  The median minimal budget is 12 (quartiles 6 and > 24; 98 frauds, 26 %, never evade within
+  24) against a median L2 norm of 20.3 for a detected fraud: an attacker with full gradient
+  access has to move a typical fraud more than half of the way to the mean legitimate
+  transaction, along the components that separate frauds in the first place (at budget 12: V17
+  and V14 ≈ 4.8 units each, 18 % of the squared budget each, then V12, V16, V10, V11). One
+  standardised unit – about one standard deviation of a single feature – frees 1.6 % of the
+  detected frauds. The probe scales the Adam step with the budget and starts from both the
+  unperturbed fraud and its straight-line shrink towards the legit mean, so the numbers are a
+  converged upper bound on attacker power (600 steps change nothing); feasibility – PCA
+  components that cannot be set directly, a positive amount, the hour on the unit circle – is
+  not modelled, so the real cost is higher.
+* **Review of the implementation** (independent code review of the diff, nine findings, all
+  fixed before the final run): quartiles of the minimal budget computed over infinities (now
+  n/a when the quantile falls among never-evaded frauds); the probe left the model's
+  `requires_grad` flags cleared; `window_ids` accepted `n_windows < 2`; the FPR band and the
+  85 % line were hard-coded instead of read from the config; variance groups with a single run
+  produced a meaningless std; the JSON writer did not create its directory; the markdown crashed
+  on an undefined median and on an empty model dict; `share_of_l2` mixed mean |δ| with squared
+  norms; a redundant assignment. Found on the first real results: a fixed Adam step could not
+  reach the boundary of the large budgets (fewer evasions at budget 24 than a straight-line
+  shrink), fixed as described above. 153 tests.
+* **Decision G10.** Rolling re-estimation of the legit quantile replaces the fixed threshold for
+  deployment (ARCHITECTURE ADRs 35–37); the "every window in band" target is restated as "mean
+  FPR inside the band, per-window spread consistent with binomial noise", which the rolling
+  scheme meets for the AE and `neg_ae` and misses by 0.05 pp for `hgb`. Both winners survive the
+  robustness checks; the evasion result enters the report's limitations as a measured number.
+  → Phase 11 (report v2).
 
 ## Risks
 

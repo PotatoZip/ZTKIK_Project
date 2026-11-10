@@ -66,6 +66,13 @@ dataset.zip ─unzip→ data/raw/creditcard.csv ─sha256→ DataFrame
                          train_summary.json, few_label.json, figures/}
   → fraud-ae few-label → results/v2_few_label.md, report/figures/v2_few_label.png
   → scripts/run_v2_supervised.sh → results/v2_supervised.md, report/figures/v2_sup_*.png
+
+  Roadmap v2 (Phase 10, robustness – robustness.py, fraud-ae robustness):
+  data/processed_temporal + runs/ae_temporal (+ raw CSV for the train-window frauds)
+    → rolling-origin windows over the last 40 % of traffic, fixed vs rolling thresholds
+  runs/sup_{hgb,neg_ae}[_seed<n>|_dseed<n>] → model-seed / data-seed variance tables
+  runs/ae_pooled → evasion probe (PGD on the inputs of the detected frauds)
+  → results/v2_robustness.{md,json}, report/figures/v2_{rolling_fpr,evasion}.png
 ```
 
 Invariants enforced by `tests/test_data.py`: no fraud in train; index sets pairwise disjoint and
@@ -92,11 +99,12 @@ the de-duplicated frame, so any split row can be traced back to the CSV.
 | `baselines.py` | PCA reconstruction, Isolation Forest on the same splits; comparison table across all runs (families `_seed<n>` / `_dseed<n>`) | `pca_scores`, `iforest_scores`, `run_baselines(cfg, splits, runs_root, suffix)`, `comparison_rows`, `seed_families`, `write_comparison(run_dirs, out_md, figures_dir, figure_prefix)` |
 | `supervised.py` | Phase 9: fixed fraud folds, out-of-fold protocol with per-fold legit-quantile thresholds, supervised classifiers (`logreg`, `hgb`, `hgb_under`, `mlp`), hybrid features on the legit-only AE, run-directory writer, few-label table | `make_folds`, `hybrid_features`, `fit_mlp`, `fit_score(method, cfg, Xl, Xf, X_eval, seed, ae)`, `run_oof`, `write_run`, `run_supervised(cfg, splits, runs_root, methods, budgets, ae, suffix)`, `few_label_markdown` |
 | `semi.py` | Phase 9: legit-only AE fine-tuned with labelled frauds – margin loss (`neg_ae`) or Deep-SAD latent term (`sad_ae`) | `finetune(ae, cfg, Xl, Xf, seed, mode)`, `semi_scores(model, X, info)` |
+| `robustness.py` | Phase 10: temporal frame with the train-window frauds, rolling-origin windows and rolling thresholds, variance groups of run families, PGD evasion probe, `results/v2_robustness.md` | `temporal_frame`, `window_ids`, `rolling_evaluation`, `variance_groups`, `variance_summary`, `evasion_probe`, `run_robustness`, `write_robustness` |
 | `diagnose.py` | Phase 7: profile of the frauds a run misses (score percentile, amount, hour, separating raw features), overlap with other runs' missed sets, ensemble upper bounds | `missed_masks`, `legit_percentile`, `group_profile`, `top_features`, `overlap_matrix`, `fusion_bounds`, `diagnose(run, against, processed_dir, root, fpr) -> (summary, arrays)`, `save_diagnostics` |
 | `plots.py` | all figures, headless matplotlib, shared two-class palette | one function per figure; `eda_figures(df, out_dir)` |
 | `report.py` | render `report/report.md` from `report/report_template.md`; placeholders resolve to JSON artifact values with arithmetic and `mean/std/min/max` | `render(template, root)`, `render_report(root, template, out)`, `references(template)` |
-| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines [--suffix]|all` (all with `--synthetic`; `prepare`/`train`/`baselines`/`all` with `--data-seed`), `compare [--runs] [--out] [--figures-dir] [--figure-prefix]`, `report [--template] [--out]`, `diagnose --run [--against …] [--fpr]`, `supervised` / `semi --config [--methods] [--budgets] [--ae-run] [--suffix] [--data-seed] [--synthetic]`, `few-label --runs … [--out] [--figure] [--reference]` | `main(argv)`; paths resolve against the cwd |
-| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `run_v2_unsupervised.sh`: the Phase 8 candidates with the pre-registered selection; `run_v2_supervised.sh`: the Phase 9 methods, few-label curve and side-by-side table; `check.sh`: format check + lint + tests | – |
+| `cli.py` | `fraud-ae prepare|train [--epochs] [--seed]|threshold|evaluate|baselines [--suffix]|all` (all with `--synthetic`; `prepare`/`train`/`baselines`/`all` with `--data-seed`), `compare [--runs] [--out] [--figures-dir] [--figure-prefix]`, `report [--template] [--out]`, `diagnose --run [--against …] [--fpr]`, `supervised` / `semi --config [--methods] [--budgets] [--ae-run] [--suffix] [--data-seed] [--synthetic]`, `few-label --runs … [--out] [--figure] [--reference]`, `robustness [--temporal-config] [--temporal-ae-run] [--ae-run] [--variance-runs …] [--windows] [--evasion-steps]`; `supervised` / `semi` also take `--seed` | `main(argv)`; paths resolve against the cwd |
+| `scripts/` | `run_ablations.sh`: every v1 AE variant, both baseline sets, the comparison and the report through the CLI; `run_v2_protocol.sh`: the Phase 7 runs, diagnosis and protocol table; `run_v2_unsupervised.sh`: the Phase 8 candidates with the pre-registered selection; `run_v2_supervised.sh`: the Phase 9 methods, few-label curve and side-by-side table; `run_v2_robustness.sh`: the Phase 10 variance runs and the robustness report; `check.sh`: format check + lint + tests | – |
 
 ### Model
 `input_dim (31 or 29) → 20 → 10 → 5 → 10 → 20 → input_dim`, ELU, linear output, 1 836 parameters.
@@ -285,6 +293,45 @@ their ceiling was measured in Phase 7 (`diagnostics.json`, ADR 27).
   vs plain-classifier pair at equal label budgets is the test of whether the AE adds anything
   once labels exist.
 
+### Robustness (Phase 10)
+* **Rolling-origin validation.** The Phase 5 temporal split (train = earliest 60 % of legit
+  traffic, val + test = the last 40 %) is reused. `temporal_frame` rebuilds the scaled feature
+  matrix from the raw CSV through the split's `data_report.json`, scaler and feature list, so it
+  can also recover the frauds of the training window that the split dropped (342 rows); the
+  supervised (`hgb`) and fine-tuned (`neg_ae`) models are fitted on the training legit rows plus
+  those frauds, the legit-only AE is `runs/ae_temporal` unchanged. The last 40 % is cut in time
+  order into `--windows` = 8 windows of equal legit count (frauds join the surrounding window);
+  window 0 only calibrates, windows 1–7 are evaluated with three thresholds: *fixed* (0.9 %
+  legit quantile of window 0, the v1 behaviour that drifted to 0.53 % FPR), *rolling-legit*
+  (re-estimated on the legit rows of the previous window, i.e. assuming the previous window's
+  labels are known), and *rolling-all* (re-estimated on all rows of the previous window, label-
+  free; it undershoots the legit target by roughly the fraud share because the frauds occupy the
+  top of the window). The target is FPR within [0.8 %, 1.0 %] on every evaluated window; pooled
+  recall over the evaluated windows comes with a Wilson interval. (On the real data a window
+  holds ≈ 14 k legit rows, so the binomial standard error of a 0.9 % FPR is 0.08 pp and even a
+  perfect threshold lands inside the ±0.1 pp band only ≈ 80 % of the time; the outcome in
+  `ROADMAP.md` therefore judges the *mean* FPR and whether the per-window spread is consistent
+  with that noise.)
+* **Variance.** `variance_groups` collects `runs/<family>`, `<family>_seed<n>` (model seed) and
+  `<family>_dseed<n>` (data seed) run directories produced by `fraud-ae supervised --seed` /
+  `--data-seed --ae-run runs/ae_pooled_dseed<n>` and reports mean ± sample std, min–max and
+  whether every run clears 85 %; the base run belongs to both groups. Data-seed runs use the
+  legit-only AE of their own split, so `neg_ae` never sees rows it later scores.
+* **Evasion probe.** For the frauds the legit-only pooled AE detects, projected gradient descent
+  (Adam, `--evasion-steps` = 200 per start, step `max(0.05, ε / 50)` so that the boundary of
+  every ball is reachable within the step budget) minimises the MSE score of `x + δ` inside the
+  L2 ball ‖δ‖₂ ≤ ε from two starts – δ = 0 and the projected straight line towards the legit
+  mean x = 0 – keeping the best iterate per fraud; budgets are the fixed grid 0.1 … 24 in
+  standardised feature units. (With a fixed step the probe evaded fewer frauds at ε = 24 than
+  the plain shrink towards the mean; 600 steps now change nothing, so the numbers are converged.)
+  Reported: the share of detected frauds pushed below the threshold per budget, the median
+  minimal budget across frauds (budget-grid resolution), the IQR when defined, the frauds never
+  evaded at the largest budget, and the features that move at the smallest budget evading half
+  of the frauds. It is a white-box upper bound on attacker power: V1–V28 are PCA components of
+  undisclosed raw features that an attacker cannot set directly, and the probe ignores feasibility
+  (amount must stay positive, the hour must stay on the unit circle). The supervised models are
+  not probed (gradient boosting is not differentiable; the MLP would be, but is not a winner).
+
 ### Measurement protocol v2 (Phase 7)
 * **Pooled frauds.** `data.fraud_val_fraction = 0` puts every fraud into the test split;
   validation holds legitimate rows only. Nothing else changes: the quantile threshold, the
@@ -370,6 +417,9 @@ for everything.
 | 32 | Fold models are fitted on all training legit rows plus other-fold frauds; the legit val/test rows are folded too | legit rows never carry a label the method could leak, so sharing them across folds is safe; folding val/test legit rows gives every row exactly one out-of-fold score instead of an implicit five-model ensemble on legit traffic |
 | 33 | Fine-tuned AEs (`neg_ae`, `sad_ae`) warm-start from the legit-only checkpoint instead of training from scratch | keeps the AE the central model (the legit-only detector plus a few labels, not a new architecture), is 20× cheaper, and makes the few-label curve a measurement of what the labels add to the existing detector |
 | 34 | Hyper-parameters of every Phase 9 method are fixed in `configs/v2_supervised.toml` | with the frauds both trained on and evaluated out-of-fold, any tuning on the pooled number would be test-set tuning; fixed settings plus the few-label curve are the honest version |
+| 35 | The rolling threshold is re-estimated on the *previous* window, not on the window being scored | calibrating on the scored window would be an oracle threshold (the Phase 4 grid); the previous window is what a deployment has, and the one-window lag after a step change is part of the honest answer |
+| 36 | Rolling-origin validation reuses the Phase 5 temporal split and recovers the train-window frauds from the raw CSV instead of adding a new split strategy | one chronological split for v1 and v2 keeps the drift numbers comparable (0.53 % FPR in Phase 5 vs the rolling fix here); the supervised models need the 342 training-window frauds the legit-only split rightly dropped |
+| 37 | The evasion probe is white-box PGD on the legit-only AE only, with budgets in standardised units | it measures the worst case the report's threat model discusses; the feasibility caveats (PCA-obfuscated features, positive amounts) are stated rather than modelled, and the non-differentiable winner is left out instead of probed with a weaker black-box attack |
 
 ## 5. Threat model and limitations (to be expanded in the report)
 * Adversary: executes unauthorized transactions that break the card-holder's usual pattern.
@@ -383,3 +433,6 @@ for everything.
 * v2: the pooled protocol evaluates each fraud once per method; the v1 val/test halves were two
   draws of the same detector and their 7 pp gap is sampling variance, not a property of the
   model. Pooled numbers are therefore reported next to the v1 numbers, never mixed with them.
+* v2: adversarial evasion is now measured (Phase 10) as a white-box L2 budget on the legit-only
+  AE; the supervised winner's robustness is covered by rolling-origin validation and variance,
+  not by an evasion probe.
