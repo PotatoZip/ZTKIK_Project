@@ -121,7 +121,7 @@ def test_template_references_only_tracked_artifact_locations():
     refs = rp.references(tpl)
     assert len(refs) > 50
     for path, keys in refs:
-        assert path.startswith(("runs/", "data/processed")), path
+        assert path.startswith(("runs/", "data/processed", "results/")), path
         assert keys and " " not in keys, keys
     # every placeholder parses (format is a known one)
     for body in rp.PLACEHOLDER.findall(tpl):

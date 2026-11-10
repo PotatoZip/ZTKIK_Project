@@ -5,6 +5,9 @@
 **ZTKIK – Project 12.** Deep autoencoder trained on legitimate credit-card transactions only;
 fraud is flagged by a high reconstruction error. Code, configs and every artifact behind this
 report: repository root (`README.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `report/CHANGELOG.md`).
+Version 2 of the report: Sections 6.8–6.11, the discussion and the conclusions cover Roadmap v2
+(pooled-fraud protocol, the legit-only ceiling, labels inside the model, robustness); Sections
+1–6.7 are the v1 study and are unchanged.
 
 ## Abstract
 
@@ -12,21 +15,42 @@ We train a 31-20-10-5-10-20-31 autoencoder (AE) in PyTorch on {{ ${runs/ae_base/
 legitimate transactions of the Kaggle *Credit Card Fraud Detection* dataset and flag a
 transaction as fraudulent when its reconstruction error exceeds a threshold chosen on
 legitimate validation data only. The project criterion is **recall ≥ 85 % at a false-positive
-rate (FPR) < 1 %** on a held-out test set. On {{ ${runs/ae_base:n_fraud} }} test frauds and
-{{ ${runs/ae_base:n_legit} | int }} legitimate test transactions the AE reaches a recall of
-**{{ ${runs/ae_base:at_threshold.recall} | pct1 }}** (Wilson 95 % interval
-{{ ${runs/ae_base:at_threshold.recall_ci_wilson.0} | pct1 }} – {{ ${runs/ae_base:at_threshold.recall_ci_wilson.1} | pct1 }})
-at an FPR of {{ ${runs/ae_base:at_threshold.fpr} | pct3 }}: the FPR half of the criterion holds,
-the recall half does not. Eleven disclosed variants (scoring method, bottleneck size, time
-encoding, BatchNorm, training length, five seeds) stay within
-{{ min(${runs/ae_base_seed2:at_threshold.recall}, ${runs/ae_base_seed3:at_threshold.recall}, ${runs/ae_batchnorm:at_threshold.recall}) | pct1 }} –
-{{ max(${runs/ae_latent_3:at_threshold.recall}, ${runs/ae_no_time:at_threshold.recall}) | pct1 }},
-so the shortfall is systematic. The AE nevertheless outperforms the classical baselines at the
-same FPR by a wide margin: PCA reconstruction with the same five-dimensional bottleneck detects
-{{ ${runs/baseline_pca_k5:at_threshold.recall} | pct1 }} of the frauds and an Isolation Forest
-{{ ${runs/baseline_iforest:at_threshold.recall} | pct1 }}. We analyse why roughly a fifth of the
-frauds reconstruct as well as legitimate traffic, report a temporal-split experiment, and
-discuss the threat model and the limits of a point-anomaly detector on PCA-obfuscated features.
+rate (FPR) < 1 %** on a held-out test set. On the pre-registered v1 split
+({{ ${runs/ae_base:n_fraud} }} test frauds) the AE reaches **{{ ${runs/ae_base:at_threshold.recall} | pct1 }}**
+recall at an FPR of {{ ${runs/ae_base:at_threshold.fpr} | pct3 }}; measured on all
+{{ ${runs/ae_pooled:n_fraud} }} frauds under the pooled protocol (the threshold never reads a
+fraud label, so every fraud can be a test fraud) the same model reaches
+**{{ ${runs/ae_pooled:at_threshold.recall} | pct1 }}** (Wilson 95 % interval
+{{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.0} | pct1 }} – {{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.1} | pct1 }})
+at an FPR of {{ ${runs/ae_pooled:at_threshold.fpr} | pct3 }}, and
+{{ mean(${runs/ae_pooled_dseed0:at_threshold.recall}, ${runs/ae_pooled_dseed1:at_threshold.recall}, ${runs/ae_pooled_dseed2:at_threshold.recall}, ${runs/ae_pooled_dseed3:at_threshold.recall}, ${runs/ae_pooled_dseed4:at_threshold.recall}) | pct1 }} ±
+{{ std(${runs/ae_pooled_dseed0:at_threshold.recall}, ${runs/ae_pooled_dseed1:at_threshold.recall}, ${runs/ae_pooled_dseed2:at_threshold.recall}, ${runs/ae_pooled_dseed3:at_threshold.recall}, ${runs/ae_pooled_dseed4:at_threshold.recall}) | pp1 }}
+over five re-drawn legitimate splits. The FPR half of the criterion holds, the recall half does
+not, and the shortfall is systematic: eleven v1 variants, a variational AE scored by
+reconstruction probability, latent-density scores, hour-segmented thresholds and a third more
+training data all stay at about 80–82 %. The diagnosis explains why: the
+{{ ${runs/ae_pooled/diagnostics.json:n_missed} }} missed frauds reconstruct like legitimate
+rows (median score at the {{ ${runs/ae_pooled/diagnostics.json:groups.missed.legit_percentile_median} * 100 | f1 }}th
+percentile of legitimate scores), and no unsupervised ensemble reaches 85 % either. The AE
+still beats PCA reconstruction ({{ ${runs/baseline_pca_k15_pooled:at_threshold.recall} | pct1 }})
+and an Isolation Forest ({{ ${runs/baseline_iforest_pooled:at_threshold.recall} | pct1 }}) at
+the same FPR. Labels change the picture. Evaluated out-of-fold over all 473 frauds with
+legit-only thresholds, a class-weighted gradient-boosting classifier reaches
+**{{ ${runs/sup_hgb:at_threshold.recall} | pct1 }}** ({{ ${runs/sup_hgb:at_threshold.recall_ci_wilson.0} | pct1 }} – {{ ${runs/sup_hgb:at_threshold.recall_ci_wilson.1} | pct1 }})
+at an FPR of {{ ${runs/sup_hgb:at_threshold.fpr} | pct3 }}, and the same autoencoder
+fine-tuned with a margin loss on the labelled frauds
+**{{ ${runs/sup_neg_ae:at_threshold.recall} | pct1 }}**; about 50 labelled frauds per fold
+suffice for a tree model, and the AE as an extra feature adds nothing measurable. Robustness
+checks on the temporal split show that a fixed threshold drifts within two days (the classifier
+would run at {{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.fpr_mean} | pct2 }} FPR) and that
+re-estimating the legitimate quantile on a rolling window restores it
+({{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.fpr_mean} | pct2 }}); both labelled
+winners keep {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.pooled_recall} | pct1 }}
+recall on the {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.n_fraud} }} later frauds and
+stay above 85 % across model seeds and legitimate splits. A white-box attacker needs a median
+L2 budget of {{ ${results/v2_robustness.json:evasion.median_minimal_budget} | f0 }} standardised units (median
+fraud norm {{ ${results/v2_robustness.json:evasion.fraud_l2_norm_median} | f1 }}) to push a detected fraud below
+the AE threshold.
 
 ## 1. Problem, threat model and success criterion
 
@@ -342,16 +366,225 @@ the no-time ablation.
 *Figure 10. Mean squared reconstruction residual per feature for legitimate and fraudulent test
 transactions, sorted by their ratio.*
 
+### 6.8 Pooled-fraud protocol, repeated splits and diagnosis (v2)
+
+The v1 protocol put half of the frauds into validation although the threshold never reads a
+fraud label (Section 4). Under the *pooled protocol* the legitimate split is unchanged, every
+fraud is a test fraud and the checkpoint is byte-identical to `runs/ae_base`; only the
+measurement changes. Re-drawing the legitimate split with five data seeds (train seed fixed)
+separates split variance from the sampling interval.
+
+| Measurement of the same legit-only AE | Test frauds | Test FPR | Test recall [Wilson 95 %] |
+|---|---:|---:|---|
+| v1 split (Section 6.1) | {{ ${runs/ae_base:n_fraud} }} | {{ ${runs/ae_base:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_base:at_threshold.recall} | pct1 }} [{{ ${runs/ae_base:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_base:at_threshold.recall_ci_wilson.1} | pct1 }}] |
+| pooled protocol, same split | {{ ${runs/ae_pooled:n_fraud} }} | {{ ${runs/ae_pooled:at_threshold.fpr} | pct3 }} | **{{ ${runs/ae_pooled:at_threshold.recall} | pct1 }}** [{{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.1} | pct1 }}] |
+| pooled, five re-drawn legit splits (mean ± std) | 473 | {{ min(${runs/ae_pooled_dseed0:at_threshold.fpr}, ${runs/ae_pooled_dseed1:at_threshold.fpr}, ${runs/ae_pooled_dseed2:at_threshold.fpr}, ${runs/ae_pooled_dseed3:at_threshold.fpr}, ${runs/ae_pooled_dseed4:at_threshold.fpr}) | pct2 }} – {{ max(${runs/ae_pooled_dseed0:at_threshold.fpr}, ${runs/ae_pooled_dseed1:at_threshold.fpr}, ${runs/ae_pooled_dseed2:at_threshold.fpr}, ${runs/ae_pooled_dseed3:at_threshold.fpr}, ${runs/ae_pooled_dseed4:at_threshold.fpr}) | pct2 }} | {{ mean(${runs/ae_pooled_dseed0:at_threshold.recall}, ${runs/ae_pooled_dseed1:at_threshold.recall}, ${runs/ae_pooled_dseed2:at_threshold.recall}, ${runs/ae_pooled_dseed3:at_threshold.recall}, ${runs/ae_pooled_dseed4:at_threshold.recall}) | pct1 }} ± {{ std(${runs/ae_pooled_dseed0:at_threshold.recall}, ${runs/ae_pooled_dseed1:at_threshold.recall}, ${runs/ae_pooled_dseed2:at_threshold.recall}, ${runs/ae_pooled_dseed3:at_threshold.recall}, ${runs/ae_pooled_dseed4:at_threshold.recall}) | pp1 }} |
+| literature protocol (no duplicate removal, all frauds in test) | {{ ${runs/ae_literature:n_fraud} }} | {{ ${runs/ae_literature:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_literature:at_threshold.recall} | pct1 }} [{{ ${runs/ae_literature:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_literature:at_threshold.recall_ci_wilson.1} | pct1 }}] |
+| PCA k = 15, pooled | 473 | {{ ${runs/baseline_pca_k15_pooled:at_threshold.fpr} | pct3 }} | {{ ${runs/baseline_pca_k15_pooled:at_threshold.recall} | pct1 }} [{{ ${runs/baseline_pca_k15_pooled:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/baseline_pca_k15_pooled:at_threshold.recall_ci_wilson.1} | pct1 }}] |
+| Isolation Forest, pooled | 473 | {{ ${runs/baseline_iforest_pooled:at_threshold.fpr} | pct3 }} | {{ ${runs/baseline_iforest_pooled:at_threshold.recall} | pct1 }} [{{ ${runs/baseline_iforest_pooled:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/baseline_iforest_pooled:at_threshold.recall_ci_wilson.1} | pct1 }}] |
+
+The v1 validation ({{ ${runs/ae_base/threshold.json:val_recall} | pct1 }}) and test
+({{ ${runs/ae_base:at_threshold.recall} | pct1 }}) halves are two draws of one
+{{ ${runs/ae_pooled:at_threshold.recall} | pct1 }} detector; the interval is half as wide
+and the criterion ({{ ${runs/ae_pooled:criterion.tp_required} }} of 473 frauds) is still
+{{ ${runs/ae_pooled:meets_target} | verdict }}. The literature row gains about 1.5 pp from
+duplicated frauds and a lower FPR and is shown for comparability only.
+
+**Diagnosis of the missed frauds** (`fraud-ae diagnose`, Figure 11). The
+{{ ${runs/ae_pooled/diagnostics.json:n_missed} }} missed frauds have a median score of
+{{ ${runs/ae_pooled/diagnostics.json:groups.missed.score_median} | f3 }} (legitimate
+{{ ${runs/ae_pooled/diagnostics.json:groups.legit.score_median} | f3 }}, detected frauds
+{{ ${runs/ae_pooled/diagnostics.json:groups.detected.score_median} | f1 }}), i.e. the
+{{ ${runs/ae_pooled/diagnostics.json:groups.missed.legit_percentile_median} * 100 | f1 }}th
+percentile of legitimate scores while the threshold sits at the 99.1st; their median amount is
+{{ ${runs/ae_pooled/diagnostics.json:groups.missed.amount_median} | f2 }} and they are spread
+over the day. On the five most separating features
+({{ ${runs/ae_pooled/diagnostics.json:top_features.features.0} }},
+{{ ${runs/ae_pooled/diagnostics.json:top_features.features.1} }},
+{{ ${runs/ae_pooled/diagnostics.json:top_features.features.2} }},
+{{ ${runs/ae_pooled/diagnostics.json:top_features.features.3} }},
+{{ ${runs/ae_pooled/diagnostics.json:top_features.features.4} }}) detected frauds average
+{{ ${runs/ae_pooled/diagnostics.json:top_features.detected_mean.0} | f1 }} to
+{{ ${runs/ae_pooled/diagnostics.json:top_features.detected_mean.4} | f1 }} standard
+deviations, missed frauds {{ ${runs/ae_pooled/diagnostics.json:top_features.missed_mean.1} | f1 }} to
+{{ ${runs/ae_pooled/diagnostics.json:top_features.missed_mean.0} | f1 }} – they lie on the
+legitimate manifold. The other detectors do not see them either: at their own thresholds PCA
+k = 15 alarms on {{ ${runs/ae_pooled/diagnostics.json:against.0.caught_of_missed_own} }} of
+the {{ ${runs/ae_pooled/diagnostics.json:n_missed} }}, the Isolation Forest on
+{{ ${runs/ae_pooled/diagnostics.json:against.2.caught_of_missed_own} }}; the union of all
+four detectors reaches {{ ${runs/ae_pooled/diagnostics.json:fusion.union_own.recall} | pct1 }}
+at {{ ${runs/ae_pooled/diagnostics.json:fusion.union_own.fpr} | pct2 }} FPR and rank-average
+fusion {{ ${runs/ae_pooled/diagnostics.json:fusion.rank_fusion.recall} | pct1 }} at
+{{ ${runs/ae_pooled/diagnostics.json:fusion.rank_fusion.fpr} | pct2 }}. No unsupervised
+combination reaches 85 %.
+
+![Figure 11 – missed frauds](figures/missed_frauds_ae_pooled.png)
+
+*Figure 11. Missed vs detected frauds under the pooled protocol: score densities, hour of day,
+amount and the means of the most separating features.*
+
+### 6.9 The legit-only ceiling (v2)
+
+Six legit-only candidates were run on data seed 0 under a pre-registered rule (best pooled
+recall with FPR < 1 % is re-run on data seeds 1–4 next to the base AE; configs
+`configs/v2_unsup_*.toml`, table `results/v2_unsupervised.md`).
+
+| Candidate (data seed 0; base AE {{ ${runs/ae_pooled_dseed0:at_threshold.recall} | pct1 }} at {{ ${runs/ae_pooled_dseed0:at_threshold.fpr} | pct3 }}) | Test FPR | Test recall [Wilson 95 %] | Recall at oracle 0.1 % FPR |
+|---|---:|---|---:|
+| legit split 80 / 10 / 10 (a third more training rows) | {{ ${runs/ae_train80_dseed0:at_threshold.fpr} | pct3 }} | **{{ ${runs/ae_train80_dseed0:at_threshold.recall} | pct1 }}** [{{ ${runs/ae_train80_dseed0:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_train80_dseed0:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/ae_train80_dseed0:recall_at_fpr.0.recall} | pct1 }} |
+| night / day legit quantiles (hour-segmented threshold) | {{ ${runs/ae_by_hour_dseed0:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_by_hour_dseed0:at_threshold.recall} | pct1 }} [{{ ${runs/ae_by_hour_dseed0:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_by_hour_dseed0:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/ae_by_hour_dseed0:recall_at_fpr.0.recall} | pct1 }} |
+| variational AE, reconstruction probability [3] | {{ ${runs/ae_vae_dseed0:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_vae_dseed0:at_threshold.recall} | pct1 }} [{{ ${runs/ae_vae_dseed0:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_vae_dseed0:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/ae_vae_dseed0:recall_at_fpr.0.recall} | pct1 }} |
+| z(log MSE) + z(latent GMM NLL), 8 components | {{ ${runs/ae_latent_gmm8_dseed0:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_latent_gmm8_dseed0:at_threshold.recall} | pct1 }} [{{ ${runs/ae_latent_gmm8_dseed0:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_latent_gmm8_dseed0:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/ae_latent_gmm8_dseed0:recall_at_fpr.0.recall} | pct1 }} |
+| latent GMM NLL alone | {{ ${runs/ae_latent_nll_dseed0:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_latent_nll_dseed0:at_threshold.recall} | pct1 }} [{{ ${runs/ae_latent_nll_dseed0:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_latent_nll_dseed0:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/ae_latent_nll_dseed0:recall_at_fpr.0.recall} | pct1 }} |
+
+The 80 / 10 / 10 split won the selection but not the confirmation: over the five splits it
+averages {{ mean(${runs/ae_train80_dseed0:at_threshold.recall}, ${runs/ae_train80_dseed1:at_threshold.recall}, ${runs/ae_train80_dseed2:at_threshold.recall}, ${runs/ae_train80_dseed3:at_threshold.recall}, ${runs/ae_train80_dseed4:at_threshold.recall}) | pct1 }} ±
+{{ std(${runs/ae_train80_dseed0:at_threshold.recall}, ${runs/ae_train80_dseed1:at_threshold.recall}, ${runs/ae_train80_dseed2:at_threshold.recall}, ${runs/ae_train80_dseed3:at_threshold.recall}, ${runs/ae_train80_dseed4:at_threshold.recall}) | pp1 }}
+against {{ mean(${runs/ae_pooled_dseed0:at_threshold.recall}, ${runs/ae_pooled_dseed1:at_threshold.recall}, ${runs/ae_pooled_dseed2:at_threshold.recall}, ${runs/ae_pooled_dseed3:at_threshold.recall}, ${runs/ae_pooled_dseed4:at_threshold.recall}) | pct1 }} ±
+{{ std(${runs/ae_pooled_dseed0:at_threshold.recall}, ${runs/ae_pooled_dseed1:at_threshold.recall}, ${runs/ae_pooled_dseed2:at_threshold.recall}, ${runs/ae_pooled_dseed3:at_threshold.recall}, ${runs/ae_pooled_dseed4:at_threshold.recall}) | pp1 }}
+for the base AE, a paired difference within noise; the best single split is
+{{ max(${runs/ae_train80_dseed0:at_threshold.recall}, ${runs/ae_train80_dseed1:at_threshold.recall}, ${runs/ae_train80_dseed2:at_threshold.recall}, ${runs/ae_train80_dseed3:at_threshold.recall}, ${runs/ae_train80_dseed4:at_threshold.recall}) | pct1 }}.
+Two negative results are worth stating: the latent code of the 5-D bottleneck carries no
+usable density signal for this fraud population (the GMM term costs 25–28 pp when added to the
+residual), and the VAE's reconstruction probability equals plain MSE at 1 % FPR but is clearly
+worse at 0.1 % FPR because the learned per-feature variance down-weights exactly the
+high-residual features. **The ceiling of the legit-only setting on this feature set is
+≈ 81–82 % recall at 1 % FPR**, consistent with the diagnosis of Section 6.8.
+
+### 6.10 Labels inside the model (v2)
+
+The {{ ${runs/sup_hgb:n_fraud} }} frauds are cut into five fixed folds. The fold-*k* model is
+fitted on all training legitimate rows plus the frauds of the other folds, takes its threshold
+from the 0.9 % quantile of its scores on the legitimate validation rows (never a fraud label),
+and scores only the fold-*k* rows; scores are divided by the fold threshold, so every method
+is evaluated out-of-fold on all 473 frauds at the common threshold 1.0 (`results/v2_supervised.md`).
+Hyper-parameters are fixed in `configs/v2_supervised.toml`. Every method is also trained with
+25 / 50 / 100 labelled frauds per fold (`results/v2_few_label.md`, Figure 13).
+
+| Method (out-of-fold, all labels) | Test FPR | Recall [Wilson 95 %] | 25 / 50 / 100 labels per fold |
+|---|---:|---|---|
+| gradient boosting on `[x, AE residual, AE score]` | {{ ${runs/sup_hybrid_hgb:at_threshold.fpr} | pct3 }} | **{{ ${runs/sup_hybrid_hgb:at_threshold.recall} | pct1 }}** [{{ ${runs/sup_hybrid_hgb:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_hybrid_hgb:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_hybrid_hgb/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_hybrid_hgb/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_hybrid_hgb/few_label.json:budgets.2.recall} | pct1 }} |
+| gradient boosting, class-weighted (`hgb`) | {{ ${runs/sup_hgb:at_threshold.fpr} | pct3 }} | **{{ ${runs/sup_hgb:at_threshold.recall} | pct1 }}** [{{ ${runs/sup_hgb:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_hgb:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_hgb/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_hgb/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_hgb/few_label.json:budgets.2.recall} | pct1 }} |
+| logistic regression, class-weighted | {{ ${runs/sup_logreg:at_threshold.fpr} | pct3 }} | **{{ ${runs/sup_logreg:at_threshold.recall} | pct1 }}** [{{ ${runs/sup_logreg:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_logreg:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_logreg/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_logreg/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_logreg/few_label.json:budgets.2.recall} | pct1 }} |
+| gradient boosting, legit under-sampled 20 : 1 | {{ ${runs/sup_hgb_under:at_threshold.fpr} | pct3 }} | **{{ ${runs/sup_hgb_under:at_threshold.recall} | pct1 }}** [{{ ${runs/sup_hgb_under:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_hgb_under:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_hgb_under/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_hgb_under/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_hgb_under/few_label.json:budgets.2.recall} | pct1 }} |
+| logistic regression on `[x, AE residual, AE score]` | {{ ${runs/sup_hybrid_logreg:at_threshold.fpr} | pct3 }} | {{ ${runs/sup_hybrid_logreg:at_threshold.recall} | pct1 }} [{{ ${runs/sup_hybrid_logreg:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_hybrid_logreg:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_hybrid_logreg/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_hybrid_logreg/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_hybrid_logreg/few_label.json:budgets.2.recall} | pct1 }} |
+| **the AE**, fine-tuned with a margin loss on frauds (`neg_ae`) | {{ ${runs/sup_neg_ae:at_threshold.fpr} | pct3 }} | {{ ${runs/sup_neg_ae:at_threshold.recall} | pct1 }} [{{ ${runs/sup_neg_ae:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_neg_ae:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_neg_ae/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_neg_ae/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_neg_ae/few_label.json:budgets.2.recall} | pct1 }} |
+| MLP 31-20-10-1, balanced mini-batches | {{ ${runs/sup_mlp:at_threshold.fpr} | pct3 }} | {{ ${runs/sup_mlp:at_threshold.recall} | pct1 }} [{{ ${runs/sup_mlp:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_mlp:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_mlp/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_mlp/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_mlp/few_label.json:budgets.2.recall} | pct1 }} |
+| the AE with a Deep-SAD latent term [9] | {{ ${runs/sup_sad_ae:at_threshold.fpr} | pct3 }} | {{ ${runs/sup_sad_ae:at_threshold.recall} | pct1 }} [{{ ${runs/sup_sad_ae:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/sup_sad_ae:at_threshold.recall_ci_wilson.1} | pct1 }}] | {{ ${runs/sup_sad_ae/few_label.json:budgets.0.recall} | pct1 }} / {{ ${runs/sup_sad_ae/few_label.json:budgets.1.recall} | pct1 }} / {{ ${runs/sup_sad_ae/few_label.json:budgets.2.recall} | pct1 }} |
+| legit-only AE (Section 6.8, no labels) | {{ ${runs/ae_pooled:at_threshold.fpr} | pct3 }} | {{ ${runs/ae_pooled:at_threshold.recall} | pct1 }} [{{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.0} | pct1 }}, {{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.1} | pct1 }}] | – |
+
+**The criterion is {{ ${runs/sup_hgb:meets_target} | verdict }}** by every method that sees
+the labelled frauds, the autoencoder itself included; four methods keep the whole interval
+above 85 %. Labels buy
++{{ ${runs/sup_hybrid_hgb:at_threshold.recall} - ${runs/ae_pooled:at_threshold.recall} | pp1 }}
+for the best classifier and
++{{ ${runs/sup_neg_ae:at_threshold.recall} - ${runs/ae_pooled:at_threshold.recall} | pp1 }}
+for the AE; tree models and the fine-tuned AEs degrade gracefully (25 labels per fold still add
+1–3 pp over no labels, about 50 reach 85 % with under-sampled gradient boosting), while the
+linear and MLP classifiers need ≥ 100 labels to beat the legit-only AE at all. The AE as an
+extra feature changes gradient boosting by
+{{ ${runs/sup_hybrid_hgb:at_threshold.recall} - ${runs/sup_hgb:at_threshold.recall} | pp1 }}
+at all labels and by nothing or less at smaller budgets, and costs the linear model
+{{ ${runs/sup_logreg:at_threshold.recall} - ${runs/sup_hybrid_logreg:at_threshold.recall} | pp1 }}:
+once labels exist, the reconstruction residual adds nothing that gradient boosting cannot learn
+from `x` itself. Precision at this operating point is 44–48 % for every labelled method.
+
+![Figure 12 – labelled methods vs the legit-only AE](figures/v2_sup_comparison_recall.png)
+
+*Figure 12. Out-of-fold recall at FPR < 1 % of the eight labelled methods and the legit-only AE,
+all 473 frauds, Wilson 95 % intervals.*
+
+![Figure 13 – few-label curve](figures/v2_few_label.png)
+
+*Figure 13. Out-of-fold recall vs labelled frauds per training fold (25, 50, 100, all);
+dashed line = legit-only AE.*
+
+### 6.11 Robustness: rolling threshold, variance, evasion (v2)
+
+**Rolling threshold** (Figure 14). On the temporal split of Section 6.6 the models see the
+first 60 % of traffic (the labelled ones also its
+{{ ${results/v2_robustness.json:rolling.train_window_frauds} }} frauds); the last 40 % is cut into
+{{ ${results/v2_robustness.json:rolling.n_windows} }} windows of equal legitimate count (≈ 14 k rows), window 0
+calibrates the fixed 0.9 % legit-quantile threshold (the v1 procedure) and windows 1–7
+({{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.n_fraud} }} frauds) are evaluated with it and with
+the quantile re-estimated on the previous window's legitimate rows.
+
+| Model | Fixed threshold: FPR mean (windows in [0.8 %, 1.0 %]) | Rolling threshold: FPR mean (in band) | Recall on the later frauds, rolling [Wilson 95 %] |
+|---|---|---|---|
+| legit-only AE | {{ ${results/v2_robustness.json:rolling.models.ae.summary.fixed.fpr_mean} | pct2 }} ({{ ${results/v2_robustness.json:rolling.models.ae.summary.fixed.windows_in_band} }} / 7) | {{ ${results/v2_robustness.json:rolling.models.ae.summary.rolling_legit.fpr_mean} | pct2 }} ({{ ${results/v2_robustness.json:rolling.models.ae.summary.rolling_legit.windows_in_band} }} / 7) | {{ ${results/v2_robustness.json:rolling.models.ae.summary.rolling_legit.pooled_recall} | pct1 }} [{{ ${results/v2_robustness.json:rolling.models.ae.summary.rolling_legit.pooled_recall_ci_wilson.0} | pct1 }}, {{ ${results/v2_robustness.json:rolling.models.ae.summary.rolling_legit.pooled_recall_ci_wilson.1} | pct1 }}] |
+| gradient boosting (`hgb`) | **{{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.fpr_mean} | pct2 }}** ({{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.windows_in_band} }} / 7) | {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.fpr_mean} | pct2 }} ({{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.windows_in_band} }} / 7) | {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.pooled_recall} | pct1 }} [{{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.pooled_recall_ci_wilson.0} | pct1 }}, {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.pooled_recall_ci_wilson.1} | pct1 }}] |
+| AE + margin loss (`neg_ae`) | {{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.fixed.fpr_mean} | pct2 }} ({{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.fixed.windows_in_band} }} / 7) | {{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.rolling_legit.fpr_mean} | pct2 }} ({{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.rolling_legit.windows_in_band} }} / 7) | {{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.rolling_legit.pooled_recall} | pct1 }} [{{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.rolling_legit.pooled_recall_ci_wilson.0} | pct1 }}, {{ ${results/v2_robustness.json:rolling.models.neg_ae.summary.rolling_legit.pooled_recall_ci_wilson.1} | pct1 }}] |
+
+The fixed threshold is the failure mode, and worst for the supervised model, whose legitimate
+scores drift upward after calibration; the AE drifts the other way (Section 6.6).
+Re-estimating the quantile on the previous window removes the systematic error for all three
+models. The remaining per-window spread (± 0.3 pp) is what binomial noise on 14 k rows allows
+(standard error 0.08 pp), so "every window inside a 0.2-pp band" is not an attainable target
+and the mean is the right criterion. Trained on the frauds of the first 60 % of traffic, both
+labelled winners catch {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.pooled_recall} | pct1 }}
+of the later frauds – the supervised models did not merely memorise the two-day campaigns –
+with a wide interval.
+
+**Variance of the winners** (all labels, out-of-fold; model seeds and re-drawn legitimate
+splits, each split with its own legit-only AE):
+
+| Family | Group | Runs | Recall mean ± std (min – max) | FPR min – max | Every run ≥ 85 % |
+|---|---|---:|---|---|:---:|
+| `hgb` | model seed | {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.n} }} | {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.recall_mean} | pct1 }} ± {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.recall_std} | pp1 }} ({{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.recall_min} | pct1 }} – {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.recall_max} | pct1 }}) | {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.fpr_min} | pct2 }} – {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.fpr_max} | pct2 }} | {{ ${results/v2_robustness.json:variance.sup_hgb.model_seed.all_meet_recall} }} |
+| `hgb` | legit split | {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.n} }} | {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.recall_mean} | pct1 }} ± {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.recall_std} | pp1 }} ({{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.recall_min} | pct1 }} – {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.recall_max} | pct1 }}) | {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.fpr_min} | pct2 }} – {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.fpr_max} | pct2 }} | {{ ${results/v2_robustness.json:variance.sup_hgb.data_seed.all_meet_recall} }} |
+| `neg_ae` | model seed | {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.n} }} | {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.recall_mean} | pct1 }} ± {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.recall_std} | pp1 }} ({{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.recall_min} | pct1 }} – {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.recall_max} | pct1 }}) | {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.fpr_min} | pct2 }} – {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.fpr_max} | pct2 }} | {{ ${results/v2_robustness.json:variance.sup_neg_ae.model_seed.all_meet_recall} }} |
+| `neg_ae` | legit split | {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.n} }} | {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.recall_mean} | pct1 }} ± {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.recall_std} | pp1 }} ({{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.recall_min} | pct1 }} – {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.recall_max} | pct1 }}) | {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.fpr_min} | pct2 }} – {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.fpr_max} | pct2 }} | {{ ${results/v2_robustness.json:variance.sup_neg_ae.data_seed.all_meet_recall} }} |
+
+Gradient boosting without early stopping or subsampling is deterministic, so its model-seed
+spread is zero by construction; the split-to-split spread of both winners is far inside the
+Wilson half-width, and every run clears the criterion.
+
+**Evasion probe** (Figure 15). For each of the {{ ${results/v2_robustness.json:evasion.n_detected} }} test frauds the
+legit-only AE detects, projected gradient descent [10] on the input minimises the score inside
+an L2 ball of radius ε in standardised feature units (white-box, two starts, best iterate; no
+feasibility constraints). Within ε = 1 – about one standard deviation of a single feature –
+{{ ${results/v2_robustness.json:evasion.per_budget.5.evaded_fraction} | pct1 }} of the detected frauds cross below the
+threshold, within ε = 4 {{ ${results/v2_robustness.json:evasion.per_budget.9.evaded_fraction} | pct1 }}, within
+ε = 8 {{ ${results/v2_robustness.json:evasion.per_budget.11.evaded_fraction} | pct1 }}; the median minimal budget is
+**{{ ${results/v2_robustness.json:evasion.median_minimal_budget} | f0 }}** against a median L2 norm of
+{{ ${results/v2_robustness.json:evasion.fraud_l2_norm_median} | f1 }} for a detected fraud, and
+{{ ${results/v2_robustness.json:evasion.never_evaded} }} frauds are not evaded within ε = 24. The perturbation moves
+{{ ${results/v2_robustness.json:evasion.movement.features.0} }}, {{ ${results/v2_robustness.json:evasion.movement.features.1} }} and
+{{ ${results/v2_robustness.json:evasion.movement.features.2} }} most – the components that separate frauds in the
+first place (Section 6.7). An attacker with the gradients therefore has to move a typical fraud
+more than half of the way to the mean legitimate transaction; since `V1..V28` are PCA
+components of undisclosed fields, the cost in the real feature space is higher still.
+
+![Figure 14 – rolling threshold](figures/v2_rolling_fpr.png)
+
+*Figure 14. FPR per window on the temporal split with the fixed window-0 threshold and with the
+quantile re-estimated on the previous window; shaded band = [0.8 %, 1.0 %].*
+
+![Figure 15 – evasion probe](figures/v2_evasion.png)
+
+*Figure 15. Share of detected frauds pushed below the AE threshold as a function of the L2
+budget, and the features that move at the median budget.*
+
 ## 7. Discussion
 
-**Why 85 % is out of reach for this detector family.** Reconstruction-error detectors flag
+**Why 85 % is out of reach for the legit-only detector family.** Reconstruction-error detectors flag
 transactions that lie off the manifold of legitimate traffic. The frauds the AE misses are
 those that lie *on* it: their `V`-profile, amount and hour are unremarkable one transaction at a
 time. The ablations show that this is not a matter of capacity (latent 3 vs 8), optimisation
 (100 vs 200 epochs), normalisation, score whitening or seed: every configuration misses the
 same fifth. Distinguishing these frauds requires information that the row does not carry –
 the card-holder's history, velocity, merchant, device – i.e. *contextual* rather than *point*
-anomaly detection.
+anomaly detection – or labels (Section 6.10).
+
+**What labels buy, and what the AE buys.** With the labelled frauds inside the model every
+method clears the criterion out-of-fold, including the autoencoder with a margin loss; the
+Phase 8 ceiling was a ceiling of the *legit-only* setting, not of the feature set. The missed
+frauds are not separable by distance from the legitimate manifold but they are separable by a
+decision boundary learned from examples. Conversely, once labels exist the AE residual adds
+nothing to gradient boosting: the two routes are complementary in *what they need* (labels
+versus none) rather than in *what they see*. A deployment would run the supervised classifier
+for recall on known fraud patterns next to the legit-only AE for departures from normal traffic
+that no label has described yet, both behind a rolling threshold.
 
 **Validation versus test.** The project's pre-registered protocol (threshold and model
 selection on validation, a single evaluation pass on test) exposed a 7-point gap between the
@@ -361,8 +594,9 @@ frauds pooled. We report it as a finding rather than re-splitting until the gap 
 **Against the literature.** Published reconstruction-error autoencoders on this dataset reach
 recall of roughly 0.80–0.90 at about 1 % FPR under random splits with all frauds in the test
 set, pooled thresholds and without duplicate removal. Our setting is stricter on each point;
-the direction and size of the resulting difference are consistent with the validation-test gap
-observed here.
+the literature-protocol row of Section 6.8 ({{ ${runs/ae_literature:at_threshold.recall} | pct1 }}
+on {{ ${runs/ae_literature:n_fraud} }} frauds) reproduces the lower end of that band and shows
+where the difference comes from (duplicated frauds, a lower FPR).
 
 ## 8. Limitations and threat-model discussion
 
@@ -372,14 +606,20 @@ observed here.
 * **Obfuscated features.** `V1..V28` are PCA components of undisclosed original fields; no
   merchant, country, channel or account identifier is available, so velocity and limit-based
   features cannot be built and the results do not transfer directly to a bank's raw data.
-* **Two days of data, one geography.** The temporal experiment shows measurable drift within
-  48 hours; a production threshold must be re-estimated continuously, and seasonal effects are
-  outside what this dataset can show.
-* **Adversarial evasion.** The model is differentiable and the score is a smooth function of
-  the input, so an attacker with query access could search for transactions with low
-  reconstruction error (gradient-based or by mimicking legitimate statistics). Hardening
-  (score randomisation, ensembles, rate-limited scoring, retraining) is discussed in the
-  literature and not implemented here.
+* **Two days of data, one geography.** Section 6.11 measures the drift: a fixed legit-quantile
+  threshold runs the supervised winner at {{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.fpr_mean} | pct2 }}
+  FPR within the second day; rolling re-estimation on the previous window restores the mean
+  but cannot remove the ± 0.3 pp sampling spread of 14 k-row windows. Seasonal effects and the
+  stability of the supervised models beyond the two recorded days are outside what this dataset
+  can show; the labelled winners were checked on {{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.n_fraud} }}
+  later frauds only.
+* **Adversarial evasion – measured.** The AE is differentiable, and Section 6.11 gives the
+  white-box cost: a median L2 budget of {{ ${results/v2_robustness.json:evasion.median_minimal_budget} | f0 }}
+  standardised units per detected fraud, {{ ${results/v2_robustness.json:evasion.per_budget.5.evaded_fraction} | pct1 }}
+  of them within one unit. The probe is an upper bound on attacker power (full gradient access,
+  PCA components set directly, no feasibility constraints); the gradient-boosting winner is not
+  differentiable and was not probed. Hardening (score randomisation, ensembles, rate-limited
+  scoring, retraining) is discussed in the literature and not implemented here.
 * **Label noise and base rate.** The dataset labels are themselves the output of a fraud
   process; the base rate ({{ ${data/processed/data_report.json:class_balance.fraud_rate} | pct3 }})
   means that even at the criterion three of four alarms would be false, which bounds the
@@ -390,43 +630,68 @@ observed here.
 ## 9. Conclusions
 
 1. A 1 836-parameter autoencoder trained only on legitimate transactions, with a threshold set
-   on legitimate validation data, detects **{{ ${runs/ae_base:at_threshold.recall} | pct1 }}**
-   ({{ ${runs/ae_base:at_threshold.recall_ci_wilson.0} | pct1 }} – {{ ${runs/ae_base:at_threshold.recall_ci_wilson.1} | pct1 }})
-   of the test frauds at an FPR of {{ ${runs/ae_base:at_threshold.fpr} | pct3 }}. The FPR
-   criterion is {{ ${runs/ae_base:criterion.meets_fpr} | verdict }}; the 85 % recall criterion
-   is **{{ ${runs/ae_base:criterion.meets_recall} | verdict }}**, and the interval excludes it.
-2. The shortfall is systematic: eleven disclosed variants and five seeds all land between
-   {{ min(${runs/ae_base_seed2:at_threshold.recall}, ${runs/ae_base_seed3:at_threshold.recall}, ${runs/ae_batchnorm:at_threshold.recall}) | pct1 }}
-   and {{ max(${runs/ae_latent_3:at_threshold.recall}, ${runs/ae_no_time:at_threshold.recall}) | pct1 }}.
-   About a fifth of the frauds reconstruct like legitimate traffic and are unreachable by any
-   threshold.
+   on legitimate validation data, detects **{{ ${runs/ae_base:at_threshold.recall} | pct1 }}** of
+   the v1 test frauds and **{{ ${runs/ae_pooled:at_threshold.recall} | pct1 }}**
+   ({{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.0} | pct1 }} – {{ ${runs/ae_pooled:at_threshold.recall_ci_wilson.1} | pct1 }})
+   of all {{ ${runs/ae_pooled:n_fraud} }} frauds at an FPR below 1 %. The FPR criterion is met;
+   the 85 % recall criterion is **{{ ${runs/ae_pooled:criterion.meets_recall} | verdict }}** in
+   the legit-only setting, and the interval excludes it.
+2. The shortfall is a ceiling of the legit-only approach, not of this model: v1 variants, more
+   training data, a VAE, latent-density scores and hour-segmented thresholds all stay at
+   ≈ 80–82 %. The {{ ${runs/ae_pooled/diagnostics.json:n_missed} }} missed frauds lie on the
+   legitimate manifold and no unsupervised ensemble reaches 85 %
+   (union {{ ${runs/ae_pooled/diagnostics.json:fusion.union_own.recall} | pct1 }} at
+   {{ ${runs/ae_pooled/diagnostics.json:fusion.union_own.fpr} | pct2 }} FPR).
 3. The autoencoder is nonetheless the best unsupervised detector in the study by a wide margin:
-   +{{ ${runs/ae_base:at_threshold.recall} - ${runs/baseline_pca_k15:at_threshold.recall} | pp1 }}
+   +{{ ${runs/ae_pooled:at_threshold.recall} - ${runs/baseline_pca_k15_pooled:at_threshold.recall} | pp1 }}
    over the best PCA baseline and
-   +{{ ${runs/ae_base:at_threshold.recall} - ${runs/baseline_iforest:at_threshold.recall} | pp1 }}
-   over the Isolation Forest at the same FPR, on both the random and the temporal split.
-4. Under a temporal split the ranking quality holds but the fixed quantile threshold becomes
-   conservative within two days; a deployment needs a rolling threshold.
-5. Reaching the 85 % / 1 % target on this data requires information beyond the single
-   transaction (account history, contextual features) or labelled data – not a larger
-   autoencoder.
+   +{{ ${runs/ae_pooled:at_threshold.recall} - ${runs/baseline_iforest_pooled:at_threshold.recall} | pp1 }}
+   over the Isolation Forest at the same FPR on 473 frauds, and ahead on the temporal split.
+4. **With labels the criterion is met.** Evaluated out-of-fold over all 473 frauds with
+   legit-only thresholds, gradient boosting reaches
+   **{{ ${runs/sup_hgb:at_threshold.recall} | pct1 }}** ({{ ${runs/sup_hgb:at_threshold.recall_ci_wilson.0} | pct1 }} – {{ ${runs/sup_hgb:at_threshold.recall_ci_wilson.1} | pct1 }})
+   and the autoencoder fine-tuned with a margin loss
+   **{{ ${runs/sup_neg_ae:at_threshold.recall} | pct1 }}**; about 50 labelled frauds per fold
+   suffice for a tree model. The AE as an extra feature adds nothing measurable
+   ({{ ${runs/sup_hybrid_hgb:at_threshold.recall} - ${runs/sup_hgb:at_threshold.recall} | pp1 }}).
+5. A fixed legit-quantile threshold does not survive two days of traffic (the supervised
+   winner would run at {{ ${results/v2_robustness.json:rolling.models.hgb.summary.fixed.fpr_mean} | pct2 }}
+   FPR); re-estimating the quantile on a rolling window of recent legitimate traffic is part of
+   the detector, not an operational detail. Both labelled winners hold
+   {{ ${results/v2_robustness.json:rolling.models.hgb.summary.rolling_legit.pooled_recall} | pct1 }}
+   recall on later frauds and ≥ 85 % across model seeds and legitimate splits.
+6. Evading the legit-only AE costs a white-box attacker a median L2 budget of
+   {{ ${results/v2_robustness.json:evasion.median_minimal_budget} | f0 }} standardised units, more
+   than half of a fraud's distance to the mean legitimate transaction, moved along the very
+   features that make frauds detectable.
+7. Recommendation: deploy the supervised classifier for recall on known fraud patterns together
+   with the legit-only autoencoder for departures from normal traffic, both behind a rolling
+   threshold, and treat account-level context as the next source of recall.
 
 ## 10. Reproducibility
 
 Every number above is rendered from a JSON artifact by `fraud-ae report` (template:
 `report/report_template.md`); a unit test fails if the committed report and the artifacts
-disagree. The full study is reproduced on a CPU in about ten minutes:
+disagree. The v1 study is reproduced on a CPU in about ten minutes, the v2 study in about one
+hour more:
 
 ```bash
 uv sync --group dev
 uv run fraud-ae all --config configs/base.toml --run runs/ae_base   # phases 1–4
-scripts/run_ablations.sh                                           # all variants, baselines, comparison, report
-scripts/check.sh                                                   # format, lint, tests
+scripts/run_ablations.sh                                           # all v1 variants, baselines, comparison
+scripts/run_v2_protocol.sh                                         # 6.8: pooled protocol, data seeds, diagnosis (≈ 5 min)
+scripts/run_v2_unsupervised.sh                                     # 6.9: legit-only candidates, pre-registered pick (≈ 8 min)
+scripts/run_v2_supervised.sh                                       # 6.10: eight labelled methods, few-label curve (≈ 25 min)
+scripts/run_v2_robustness.sh                                       # 6.11: variance runs, rolling threshold, evasion (≈ 12 min)
+uv run fraud-ae report && scripts/check.sh                         # render this report; format, lint, tests
 ```
 
 Artifact map: `data/processed*/data_report.json` (Section 2), `runs/<run>/train_summary.json`
 (Section 3), `runs/<run>/threshold.json` (Section 4, validation columns),
-`runs/<run>/metrics.json` (Sections 5–6), `results/comparison.md` (all 21 runs in one table).
+`runs/<run>/metrics.json` (Sections 5–6), `results/comparison.md` (all 21 v1 runs in one table),
+`runs/ae_pooled/diagnostics.json` (Section 6.8), `results/v2_{protocol,unsupervised,supervised,few_label}.md`
+and `runs/sup_<method>/{folds.json,few_label.json}` (Sections 6.9–6.10),
+`results/v2_robustness.json` (Section 6.11).
 The prompt log of the AI-assisted development is in `report/prompt_log.md`; design decisions
 are recorded in `ARCHITECTURE.md`.
 
@@ -449,3 +714,9 @@ are recorded in `ARCHITECTURE.md`.
    *Journal of the American Statistical Association*, 22(158), 209–212.
 8. PyTorch documentation, https://pytorch.org/docs/ ; scikit-learn documentation,
    https://scikit-learn.org/stable/
+9. Ruff, L., Vandermeulen, R. A., Görnitz, N., Binder, A., Müller, E., Müller, K.-R., &
+   Kloft, M. (2020). Deep semi-supervised anomaly detection. *International Conference on
+   Learning Representations (ICLR)*.
+10. Madry, A., Makelov, A., Schmidt, L., Tsipras, D., & Vladu, A. (2018). Towards deep learning
+    models resistant to adversarial attacks. *International Conference on Learning
+    Representations (ICLR)*.
