@@ -175,10 +175,34 @@ def build_parser() -> argparse.ArgumentParser:
             help="legit-only AE run for hybrid/fine-tuned methods (default: supervised.ae_run)",
         )
         p.add_argument("--suffix", default="", help="run-name suffix, runs/sup_<method><suffix>")
+        p.add_argument("--seed", type=int, help="override train.seed (model-seed variance)")
         p.add_argument(
             "--synthetic", action="store_true", help=f"read <processed_dir>{SYNTHETIC_SUFFIX}"
         )
         _add_data_seed(p)
+
+    p = sub.add_parser(
+        "robustness",
+        help="Phase 10: rolling threshold on the temporal split, winner variance, evasion probe",
+    )
+    _add_config(p)
+    p.add_argument("--temporal-config", default="configs/ablation_temporal.toml")
+    p.add_argument(
+        "--temporal-ae-run", default="runs/ae_temporal", help="legit-only AE of the temporal split"
+    )
+    p.add_argument(
+        "--ae-run", default="runs/ae_pooled", help="legit-only AE of the pooled split (evasion)"
+    )
+    p.add_argument(
+        "--variance-runs", nargs="*", default=["sup_hgb", "sup_neg_ae"], help="run families"
+    )
+    p.add_argument(
+        "--windows", type=int, default=8, help="rolling windows over the last 40 %% of traffic"
+    )
+    p.add_argument("--evasion-steps", type=int, default=200)
+    p.add_argument("--out", default="results/v2_robustness.md")
+    p.add_argument("--figures-dir", default="report/figures")
+    p.add_argument("--synthetic", action="store_true", help="synthetic splits and runs")
 
     p = sub.add_parser(
         "few-label", help="Phase 9: few-label table + figure from runs/*/few_label.json"
@@ -605,6 +629,7 @@ def cmd_supervised(
     synthetic: bool = False,
     data_seed: int | None = None,
     default_methods: tuple[str, ...] = SUPERVISED_METHODS,
+    seed: int | None = None,
 ) -> int:
     """Phase 9: out-of-fold evaluation of supervised / weakly-supervised methods on the pooled
     split; one run directory per method (``runs/sup_<method>``) with ``few_label.json``."""
@@ -613,6 +638,8 @@ def cmd_supervised(
     from .train import CONFIG_FILE, load_model
 
     cfg = _with_data_seed(cfg, data_seed)
+    if seed is not None:
+        cfg = dataclasses.replace(cfg, train=dataclasses.replace(cfg.train, seed=seed))
     if ae_run:
         cfg = dataclasses.replace(
             cfg, supervised=dataclasses.replace(cfg.supervised, ae_run=ae_run)
@@ -653,6 +680,69 @@ def cmd_supervised(
             f"{at['recall_ci_wilson'][1]:.1%}] at FPR {at['fpr']:.3%}  "
             f"meets_target: {m['meets_target']}  few-label: {curve}"
         )
+    return 0
+
+
+def cmd_robustness(
+    cfg: Config,
+    temporal_config: str,
+    temporal_ae_run: str,
+    ae_run: str,
+    variance_runs: list[str],
+    windows: int,
+    evasion_steps: int,
+    out: str,
+    figures_dir: str,
+    synthetic: bool = False,
+) -> int:
+    """Phase 10: rolling threshold on the temporal split, variance of the winners, evasion."""
+    from .plots import evasion, rolling_fpr
+    from .robustness import run_robustness, write_robustness
+
+    root = project_root()
+    tcfg = load_config(temporal_config)
+    res = run_robustness(
+        cfg,
+        root,
+        _processed_dir(tcfg, synthetic),
+        Path(temporal_ae_run),
+        Path(ae_run),
+        _processed_dir(cfg, synthetic),
+        tuple(variance_runs),
+        n_windows=windows,
+        evasion_steps=evasion_steps,
+        run_suffix=SYNTHETIC_SUFFIX if synthetic else "",
+    )
+    figs = Path(figures_dir)
+    res["figures"] = {
+        "rolling FPR": str(rolling_fpr(res["rolling"], figs / "v2_rolling_fpr.png")),
+        "evasion": str(evasion(res["evasion"], figs / "v2_evasion.png")),
+    }
+    out_p = Path(out)
+    write_robustness(res, out_p, out_p.with_suffix(".json"))
+    for m, r in res["rolling"]["models"].items():
+        s = r["summary"]
+        fx, rl = s["fixed"], s["rolling_legit"]
+        print(
+            f"rolling {m}: fixed-threshold FPR {fx['fpr_min']:.2%}–{fx['fpr_max']:.2%} "
+            f"({fx['windows_in_band']}/{fx['n_windows']} windows in band), rolling-legit "
+            f"{rl['fpr_min']:.2%}–{rl['fpr_max']:.2%} ({rl['windows_in_band']}/{rl['n_windows']}); "
+            f"pooled recall fixed {fx['pooled_recall']:.1%} vs rolling {rl['pooled_recall']:.1%}"
+        )
+    for fam, groups in res["variance"].items():
+        for kind, v in groups.items():
+            if v["n"] >= 2:
+                print(
+                    f"variance {fam} {kind}: n={v['n']} recall {v['recall_mean']:.1%} ± "
+                    f"{v['recall_std']:.1%} ({v['recall_min']:.1%}–{v['recall_max']:.1%})"
+                )
+    ev = res["evasion"]
+    print(
+        f"evasion: {ev['n_detected']} detected frauds, median minimal L2 budget "
+        f"{ev['median_minimal_budget']}, never evaded within the largest budget: "
+        f"{ev['never_evaded']}"
+    )
+    print(f"artifacts: {out}, {out_p.with_suffix('.json')}, {figs}/v2_{{rolling_fpr,evasion}}.png")
     return 0
 
 
@@ -720,6 +810,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.synthetic,
                 args.data_seed,
                 SEMI_METHODS if args.command == "semi" else SUPERVISED_METHODS,
+                args.seed,
+            )
+        if args.command == "robustness":
+            return cmd_robustness(
+                load_config(args.config),
+                args.temporal_config,
+                args.temporal_ae_run,
+                args.ae_run,
+                args.variance_runs,
+                args.windows,
+                args.evasion_steps,
+                args.out,
+                args.figures_dir,
+                args.synthetic,
             )
         if args.command == "few-label":
             return cmd_few_label(args.runs, args.out, args.figure, args.reference)

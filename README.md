@@ -72,6 +72,12 @@ uv run fraud-ae semi       --config configs/v2_supervised.toml --ae-run runs/ae_
 uv run fraud-ae few-label  --runs runs/sup_hgb runs/sup_neg_ae --reference runs/ae_pooled      # few-label table + figure
 uv run fraud-ae compare    --runs runs/ae_pooled runs/sup_* --out results/v2_supervised.md --figure-prefix v2_sup_
 scripts/run_v2_supervised.sh                                              # all of the above (≈ 25 min)
+
+# Roadmap v2, Phase 10 – robustness of the winners (needs runs/ae_pooled, runs/ae_temporal, runs/sup_hgb, runs/sup_neg_ae)
+uv run fraud-ae supervised --config configs/v2_supervised.toml --methods hgb neg_ae --budgets --seed 0 --suffix _seed0   # model-seed run (all labels)
+uv run fraud-ae supervised --config configs/v2_supervised.toml --methods hgb neg_ae --budgets --data-seed 0 --ae-run runs/ae_pooled_dseed0   # data-seed run
+uv run fraud-ae robustness --config configs/v2_supervised.toml --out results/v2_robustness.md --figures-dir report/figures   # 9. rolling threshold, variance, evasion probe
+scripts/run_v2_robustness.sh                                              # 4 model seeds + 5 data seeds × {hgb, neg_ae}, then the report (≈ 12 min)
 ```
 
 **Reproduce the whole study from a clean checkout** (CPU, ≈ 10 min): `uv sync --group dev`,
@@ -101,14 +107,14 @@ configs/        TOML experiments (base + ablations: latent size, no time feature
                 v2_pooled / v2_literature: Roadmap v2 measurement protocol; v2_unsup_*: Phase 8 candidates;
                 v2_supervised: Phase 9 methods and fixed hyper-parameters)
 scripts/        run_ablations.sh (every v1 run, baselines, comparison, report), run_v2_protocol.sh (Phase 7),
-                run_v2_unsupervised.sh (Phase 8), run_v2_supervised.sh (Phase 9), check.sh
+                run_v2_unsupervised.sh (Phase 8), run_v2_supervised.sh (Phase 9), run_v2_robustness.sh (Phase 10), check.sh
 src/fraud_ae/   package: config, data, synthetic, model, train, scoring, threshold, evaluate, baselines, diagnose,
-                supervised, semi, plots, report, cli
+                supervised, semi, robustness, plots, report, cli
 tests/          pytest suite on the synthetic creditcard-like frame from fraud_ae.synthetic
 data/           raw/ (extracted CSV) and processed/ (splits, scaler, data_report.json) – git-ignored
 runs/           one directory per experiment – git-ignored
 results/        comparison.md, ablations_phase4.md, v2_protocol.md, v2_unsupervised.md, v2_supervised.md,
-                v2_few_label.md – generated from runs/* (tracked)
+                v2_few_label.md, v2_robustness.md + .json – generated from runs/* (tracked)
 report/         report.md (rendered), report_template.md (source of truth), CHANGELOG.md, prompt_log.md, figures/
 ```
 
@@ -127,8 +133,13 @@ probability, latent-density scores and hour-segmented thresholds all stay at ≈
 milestone M5): with the labelled frauds inside the model, evaluated out-of-fold over all 473
 frauds, every method clears the criterion – gradient boosting 89.2 % [86.1 %, 91.7 %], the
 autoencoder fine-tuned with a margin loss 87.3 % [84.0 %, 90.0 %], all at FPR < 1 %; the AE as
-a feature adds nothing measurable once labels exist. Next: Phase 10 (robustness of the winners)
-and Phase 11 (report v2). The sections below are the per-phase working notes; outcomes are in
+a feature adds nothing measurable once labels exist. **Phase 10** (version 1.4.0): both winners
+survive the robustness checks – 85.4 % recall on the 123 frauds of the future windows of the
+temporal split, 88.8 % ± 0.3 % (`hgb`) and 87.2 % ± 0.6 % (`neg_ae`) over six legit splits,
+every run ≥ 85 % at FPR < 1 % – provided the legit quantile is re-estimated on a rolling window
+(the fixed v1 threshold would run `hgb` at 2.2 % FPR); evading the legit-only AE costs a median
+L2 budget of 12 standardised units, more than half of a fraud's distance to the legit mean.
+Next: Phase 11 (report v2). The sections below are the per-phase working notes; outcomes are in
 `ROADMAP.md`, every change in `report/CHANGELOG.md`. The v1 report is unchanged until Phase 11.
 
 ### Phase 1 – data (`fraud-ae prepare`, seed 42)
@@ -393,3 +404,57 @@ held-out fold. Every method is also run with 25 / 50 / 100 labelled frauds per t
   guard, dropped partial batches, float64 MLP probabilities, per-fold FPR warning) are in, the
   affected methods were re-run, and the remaining caveat – AE residuals of the training legit
   rows are in-sample, train MSE 0.418 vs val 0.420 – is documented in `ARCHITECTURE.md`.
+
+### Phase 10 – robustness and deployment realism (`fraud-ae robustness`)
+
+**Protocol.** Three checks on the Phase 9 winners (`hgb`, `neg_ae`) and the legit-only AE,
+written to `results/v2_robustness.md` / `.json`: (1) rolling-origin validation on the Phase 5
+temporal split – the models see the first 60 % of traffic (the supervised ones also its 342
+frauds), the last 40 % is cut into 8 windows of equal legit count (≈ 14 k rows), window 0
+calibrates the fixed threshold and windows 1–7 (123 frauds) are scored with that threshold, with
+the legit quantile re-estimated on the previous window's legit rows, and with it re-estimated
+label-free on all previous-window rows; (2) variance over model seeds 0–3 + 42 and legit splits
+0–4 + 42 (each split with its own legit-only AE for `neg_ae`); (3) a white-box evasion probe –
+projected gradient descent on the input of every fraud the pooled AE detects, minimising its
+score inside an L2 ball, over a budget grid of 0.1–24 standardised units.
+
+| Check | Legit-only AE | `hgb` | `neg_ae` |
+|---|---|---|---|
+| FPR with the fixed threshold from window 0 (mean; windows in [0.8 %, 1.0 %]) | 0.71 %; 4 / 7 | **2.20 %**; 0 / 7 | 1.00 %; 0 / 7 |
+| FPR with the threshold re-estimated on the previous window's legit rows | 0.85 %; 4 / 7 | 1.05 %; 4 / 7 | 0.88 %; 4 / 7 |
+| Recall on the 123 future frauds, rolling threshold [Wilson 95 %] | 77.2 % [69.1, 83.8] | 85.4 % [78.1, 90.5] | 85.4 % [78.1, 90.5] |
+| Recall over 5 model seeds (pooled split, out-of-fold, 473 frauds) | – | 89.2 % ± 0.0 % | 87.4 % ± 0.4 % |
+| Recall over 6 legit splits (pooled protocol, out-of-fold) | – | 88.8 % ± 0.3 % | 87.2 % ± 0.6 % |
+| Median L2 budget to evade (median fraud norm 20.3) | 12 – 1.6 % evade within 1 unit, 26 % not within 24 | not differentiable | not probed |
+
+* **Threshold drift is real and the fixed threshold is the wrong procedure** – worst for the
+  supervised model, whose legit scores drift upward after calibration (2.2 % FPR with the v1
+  procedure), mildest for the AE, which drifts downward (the Phase 5 observation).
+  Re-estimating the quantile on the previous window removes the systematic part for all three
+  models; the remaining per-window spread (± 0.3 pp) is what binomial noise on 14 k legit rows
+  allows, so the roadmap's "every window inside a 0.2-pp band" was not reachable and is
+  restated as "mean inside the band" (`ROADMAP.md`, Phase 10 outcome).
+* **No campaign overfitting on the point estimate.** Trained on the frauds of the first 60 %
+  of traffic, both winners catch 85.4 % of the later frauds, 8 pp above the legit-only AE on the
+  same rows – with a wide interval (123 frauds).
+* **Variance is small.** All 22 runs clear 85 % at FPR < 1 %; gradient boosting without early
+  stopping or subsampling is deterministic (zero model-seed spread by construction); the
+  split-to-split spread of 0.3–0.6 pp is well inside the Wilson half-width of ≈ 3 pp.
+* **Evasion costs about half the distance to normal.** An attacker with the gradients needs a
+  median budget of 12 standardised units and moves V17, V14, V12, V16, V10 and V11 – the
+  components that separate frauds in the first place; one unit frees 1.6 % of the detected
+  frauds. White-box and without feasibility constraints: an upper bound on attacker power
+  (`ARCHITECTURE.md`, ADR 37).
+* **Files.** `src/fraud_ae/robustness.py`, `plots.rolling_fpr` / `plots.evasion`,
+  `fraud-ae robustness` (`supervised` / `semi` gained `--seed`), `scripts/run_v2_robustness.sh`
+  (≈ 12 min), tracked `results/v2_robustness.{md,json}` and
+  `report/figures/v2_{rolling_fpr,evasion}.png`; the 18 variance run directories are
+  git-ignored. 153 tests.
+* **Review.** Independent code review of the diff (nine findings, fixed before the final run):
+  percentiles over infinite minimal budgets, `requires_grad` flags not restored, no guard on
+  `n_windows < 2`, band and recall target hard-coded, single-run variance rows, missing
+  directory for the JSON, crashes of the markdown on an undefined median / empty model dict,
+  wrong `share_of_l2` normalisation. Found on the first real results: a fixed Adam step could
+  not reach the boundary of the large budgets (fewer evasions at budget 24 than a straight-line
+  shrink towards the legit mean); the step now scales with the budget and the probe also starts
+  from that shrink, after which 600 steps change nothing.

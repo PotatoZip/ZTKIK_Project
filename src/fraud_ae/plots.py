@@ -638,3 +638,82 @@ def few_label_curve(
     ax.set_title("What labels buy – recall vs label budget")
     ax.legend(loc="lower right", fontsize=7, ncol=2)
     return _save(fig, out)
+
+
+# --------------------------------------------------------------------------- Phase 10: robustness
+
+
+def rolling_fpr(rolling: dict, out: Path) -> Path:
+    """Per-window FPR for the fixed and the rolling thresholds, one panel per model, with the
+    target band shaded."""
+    models = list(rolling["models"])
+    fig, axes = plt.subplots(1, len(models), figsize=(3.6 * len(models) + 1, 3.4), sharey=True)
+    axes = np.atleast_1d(axes)
+    lo, hi = rolling["band"]
+    for ax, m in zip(axes, models, strict=True):
+        w = rolling["models"][m]["windows"]
+        x = [r["window"] for r in w]
+        ax.axhspan(lo * 100, hi * 100, color=COLOR_LEGIT, alpha=0.10, lw=0, label="target band")
+        for key, color, ls, label in (
+            ("fixed", COLOR_TEXT, "--", "fixed threshold"),
+            ("rolling_legit", COLOR_FRAUD, "-", "rolling (legit rows)"),
+            ("rolling_all", COLOR_MISSED, "-", "rolling (all rows)"),
+        ):
+            ax.plot(
+                x,
+                [r[key]["fpr"] * 100 for r in w],
+                color=color,
+                ls=ls,
+                lw=2,
+                marker="o",
+                ms=4,
+                label=label,
+            )
+        ax.set_title(m)
+        ax.set_xlabel("window (time order)")
+        ax.set_xticks(x)
+    axes[0].set_ylabel("FPR per window (%)")
+    axes[0].legend(fontsize=7, loc="upper right")
+    fig.suptitle("Rolling-origin validation: threshold drift and its fix", x=0.01, ha="left")
+    fig.tight_layout()
+    return _save(fig, out)
+
+
+def evasion(ev: dict, out: Path) -> Path:
+    """Evaded share vs L2 budget (log x) and the features that move at the median budget."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.6), gridspec_kw={"width_ratios": [3, 2]})
+    b = [p["budget"] for p in ev["per_budget"]]
+    f = [p["evaded_fraction"] for p in ev["per_budget"]]
+    ax1.plot(b, f, color=COLOR_FRAUD, lw=2, marker="o", ms=4)
+    ax1.axhline(0.5, color=COLOR_TEXT, lw=1, ls="--")
+    if ev["median_minimal_budget"] is not None:
+        ax1.axvline(ev["median_minimal_budget"], color=COLOR_TEXT, lw=1, ls=":")
+        ax1.annotate(
+            f"median budget {ev['median_minimal_budget']:g}",
+            (ev["median_minimal_budget"], 0.05),
+            xytext=(4, 0),
+            textcoords="offset points",
+            fontsize=8,
+            color=COLOR_TEXT,
+        )
+    ax1.set_xscale("log")
+    ax1.set_xticks(b)
+    ax1.set_xticklabels([f"{x:g}" for x in b], fontsize=7)
+    ax1.minorticks_off()
+    ax1.set_ylim(0, 1.0)
+    ax1.set_xlabel("L2 budget (standardised feature units)")
+    ax1.set_ylabel("share of detected frauds evaded")
+    ax1.set_title(f"Evasion of the legit-only AE ({ev['n_detected']} detected frauds)")
+    mv = ev.get("movement")
+    if mv:
+        pos = np.arange(len(mv["features"]))
+        ax2.barh(pos, mv["mean_abs_delta"], color=COLOR_MISSED)
+        ax2.set_yticks(pos)
+        ax2.set_yticklabels(mv["features"], fontsize=8)
+        ax2.invert_yaxis()
+        ax2.set_xlabel(f"mean |δ| at budget {mv['budget']:g}")
+        ax2.set_title("Features that move")
+    else:
+        ax2.axis("off")
+    fig.tight_layout()
+    return _save(fig, out)

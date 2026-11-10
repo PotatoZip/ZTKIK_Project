@@ -6,9 +6,63 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned (Roadmap v2 in `ROADMAP.md`): Phase 10 rolling threshold, seed / data-seed variance of
-the winners (`hgb`, `neg_ae`), evasion probe; Phase 11 report v2 (sections 6.8–6.10, abstract
-and conclusions around "what labels buy").
+Planned (Roadmap v2 in `ROADMAP.md`): Phase 11 report v2 (sections 6.8–6.10, abstract and
+conclusions around "what labels buy", rolling-threshold and evasion results in the limitations,
+CHANGELOG 2.0.0).
+
+## [1.4.0] – 2026-11-09 – Roadmap v2 Phase 10: robustness and deployment realism
+
+### Added
+- `fraud_ae.robustness`: `temporal_frame` (rebuilds the scaled temporal-split frame including
+  the train-window frauds from the data report), `window_ids` / `rolling_evaluation`
+  (rolling-origin windows of equal legit count; fixed, rolling-legit and label-free rolling-all
+  thresholds; per-window and pooled FPR / recall with Wilson intervals), `variance_groups` /
+  `variance_summary` (model-seed and data-seed families of run directories), `evasion_probe`
+  (white-box PGD on the legit-only AE inside an L2 ball: budget-scaled Adam step, two starts,
+  best iterate; minimal budgets with quartiles, never-evaded count, moving features),
+  `run_robustness`, `robustness_markdown`, `write_robustness`.
+- `plots.rolling_fpr` (FPR per window and model with the target band) and `plots.evasion`
+  (evaded share vs budget, moving features).
+- CLI `fraud-ae robustness --config [--temporal-config] [--temporal-ae-run] [--ae-run]
+  [--variance-runs …] [--windows] [--evasion-steps] [--out] [--figures-dir] [--synthetic]`;
+  `fraud-ae supervised` / `semi` take `--seed` (overrides `train.seed`, recorded in the
+  snapshot).
+- `scripts/run_v2_robustness.sh` (model seeds 0–3 and data seeds 0–4 of `hgb` / `neg_ae`, then
+  the report); tracked `results/v2_robustness.md`, `results/v2_robustness.json`,
+  `report/figures/{v2_rolling_fpr,v2_evasion}.png`.
+- Tests `tests/test_robustness.py` (6: window ids incl. the `n_windows < 2` guard, deterministic
+  rolling-threshold recovery after a drift step, variance groups / summary with suffix and
+  target, evasion probe monotone in the budget with finite quartiles and restored
+  `requires_grad`, temporal frame, CLI end-to-end); suite 147 → 153.
+
+### Changed
+- Version 1.4.0; ARCHITECTURE: Phase 10 data flow, `robustness.py` row, "Robustness" section,
+  ADRs 35–37, threat-model bullet; ROADMAP: Phase 10 ✅ with outcome and the restated G10
+  target; README: Phase 10 commands, layout, status, section.
+
+### Fixed (independent code review of the diff, before the final run)
+- Evasion quartiles are `n/a` when the quantile falls among never-evaded frauds (were computed
+  over infinities); `share_of_l2` uses the mean squared δ; the probe restores the model's
+  `requires_grad` flags.
+- `window_ids` rejects `n_windows < 2`; the FPR band and the recall target come from the config;
+  variance groups with fewer than two runs are reported without a std; the JSON writer creates
+  its directory; the markdown handles an undefined median and an empty model dict.
+- Evasion probe (found on the first real results): the Adam step scales with the budget
+  (`max(lr, ε / 50)`) and every budget is also started from the straight-line shrink towards the
+  legit mean – with a fixed step the probe evaded fewer frauds at budget 24 than the plain
+  shrink; the results are now unchanged by 600 steps.
+
+### Results (real data)
+- Rolling threshold (temporal split, 8 windows, 123 future frauds): fixed threshold → mean FPR
+  0.71 % (AE) / **2.20 %** (`hgb`) / 1.00 % (`neg_ae`); re-estimated on the previous window's
+  legit rows → 0.85 % / 1.05 % / 0.88 %, 4 / 7 windows inside [0.8 %, 1.0 %] for each model
+  (binomial noise on 14 k rows allows ≈ 80 %); recall on the future frauds 77.2 % / 85.4 % /
+  85.4 %.
+- Variance: `hgb` 89.2 % ± 0.0 % over 5 model seeds (deterministic estimator) and 88.8 % ± 0.3 %
+  over 6 legit splits; `neg_ae` 87.4 % ± 0.4 % and 87.2 % ± 0.6 %; all 22 runs ≥ 85 % at
+  FPR < 1 %.
+- Evasion of the legit-only AE: median minimal L2 budget 12 (median fraud norm 20.3); 1.6 % of
+  the detected frauds evade within 1 unit, 26 % not within 24; V17, V14 and V12 move most.
 
 ## [1.3.0] – 2026-10-31 – Roadmap v2 Phase 9: labels inside the model (milestone M5)
 
